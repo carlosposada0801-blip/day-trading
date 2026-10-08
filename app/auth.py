@@ -18,7 +18,7 @@ SESSION_DAYS = int(os.getenv("SESSION_DAYS", "14"))
 MAX_FAILS, LOCKOUT_SECONDS = 5, 15 * 60
 # The Robinhood OAuth callback must be reachable without our cookie (it's a cross-site redirect);
 # it only completes a login you started, validated by the OAuth state parameter.
-PUBLIC_PATHS = {"/login", "/static/login.html", "/static/styles.css", "/broker/robinhood/callback"}
+PUBLIC_PATHS = {"/login", "/static/login.html", "/static/styles.css", "/static/theme.js", "/broker/robinhood/callback"}
 
 _password = os.getenv("APP_PASSWORD")
 if not _password:

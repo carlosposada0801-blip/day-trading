@@ -4,23 +4,36 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Signal Desk</title>
+  <meta name="color-scheme" content="light dark">
+  <script src="/static/theme.js"></script>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
   <header>
     <h1>Signal Desk</h1>
     <span id="mode" class="pill"></span>
+    <form id="search" class="search" role="search">
+      <input id="search-input" placeholder="Look up ticker  /" aria-label="Look up a ticker" autocomplete="off" maxlength="10">
+    </form>
     <span id="sources" class="sources"></span>
     <span id="ai" class="pill ghost-pill" hidden>AI sentiment</span>
-    <button id="bell" title="Alerts">🔔 <span id="unseen">0</span></button>
-    <button id="refresh">Refresh</button>
+    <button id="header-stop" class="header-stop" hidden title="Stop all trading">STOP</button>
+    <button id="bell" title="Alerts (a)">🔔 <span id="unseen">0</span></button>
+    <span id="updated" class="updated" title="Auto-refreshes every minute while this tab is visible"></span>
+    <button id="refresh" title="Refresh (r)">Refresh</button>
+    <button id="theme" class="icon-btn" title="Theme (t)">Auto</button>
+    <button id="help" class="icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
     <form method="post" action="/logout"><button type="submit" class="ghost-btn">Log out</button></form>
   </header>
   <p class="disclaimer">Signals are heuristic summaries of public chatter and filings, not financial advice. Real orders are placed only when the Autotrader is connected to Robinhood and switched on.</p>
 
   <main>
     <section class="card wide">
-      <h2>Watchlist signals</h2>
+      <div class="card-head">
+        <h2>Watchlist signals</h2>
+        <button id="edit-wl" class="ghost small" aria-expanded="false">Edit watchlist</button>
+        <div id="wl-editor" class="chips" hidden></div>
+      </div>
       <table id="signals">
         <thead><tr>
           <th>Ticker</th><th>Price</th><th>Day</th><th>Score</th><th>Stance</th>
@@ -28,8 +41,28 @@
           <th title="5-day price move">Momentum</th><th title="SEC Form 4 open-market buys vs sells">Insiders</th>
           <th title="13F position changes by tracked funds">Funds</th><th title="House/Senate disclosed trades">Congress</th><th>Conf.</th>
         </tr></thead>
-        <tbody></tbody>
+        <tbody><tr class="loading-row"><td colspan="12">Loading signals…</td></tr></tbody>
       </table>
+    </section>
+
+    <section class="card wide" id="detail" hidden>
+      <div class="detail-head">
+        <h2 id="d-title"></h2>
+        <div id="d-spark-wrap" class="chart-wrap"><svg id="d-spark" viewBox="0 0 260 48" preserveAspectRatio="none" aria-label="30-day price"></svg></div>
+        <form id="trade" class="trade">
+          <input id="t-qty" type="number" min="0.01" step="any" value="10" aria-label="Quantity">
+          <button type="submit" data-side="buy" class="buy">Paper buy</button>
+          <button type="submit" data-side="sell" class="sell">Paper sell</button>
+          <button type="button" id="close-detail" class="close-btn" title="Close (Esc)">Close</button>
+        </form>
+      </div>
+      <div class="cols">
+        <div><h3>News</h3><ul id="d-news" class="feed"></ul></div>
+        <div><h3>Social</h3><ul id="d-social" class="feed"></ul></div>
+        <div><h3>Insider trades (Form 4)</h3><ul id="d-insiders" class="feed"></ul></div>
+        <div><h3>Congress trades</h3><ul id="d-congress" class="feed"></ul></div>
+        <div><h3>Fund moves (13F)</h3><ul id="d-funds" class="feed"></ul></div>
+      </div>
     </section>
 
     <section class="card wide" id="trader">
@@ -68,24 +101,6 @@
       <div id="sim"></div>
     </section>
 
-    <section class="card wide" id="detail" hidden>
-      <div class="detail-head">
-        <h2 id="d-title"></h2>
-        <svg id="d-spark" viewBox="0 0 200 40" preserveAspectRatio="none" aria-label="30-day price"></svg>
-        <form id="trade" class="trade">
-          <input id="t-qty" type="number" min="0.01" step="any" value="10" aria-label="Quantity">
-          <button type="submit" data-side="buy" class="buy">Paper buy</button>
-          <button type="submit" data-side="sell" class="sell">Paper sell</button>
-        </form>
-      </div>
-      <div class="cols">
-        <div><h3>News</h3><ul id="d-news" class="feed"></ul></div>
-        <div><h3>Social</h3><ul id="d-social" class="feed"></ul></div>
-        <div><h3>Insider trades (Form 4)</h3><ul id="d-insiders" class="feed"></ul></div>
-        <div><h3>Congress trades</h3><ul id="d-congress" class="feed"></ul></div>
-        <div><h3>Fund moves (13F)</h3><ul id="d-funds" class="feed"></ul></div>
-      </div>
-    </section>
 
     <section class="card" id="alerts-card">
       <h2>Alerts <button id="run-alerts" class="ghost small">Check now</button></h2>
@@ -118,6 +133,22 @@
       <button id="reset" class="ghost">Reset account</button>
     </section>
   </main>
+  <dialog id="keys">
+    <h2>Keyboard shortcuts</h2>
+    <div class="keys">
+      <kbd>/</kbd><span>Look up any ticker</span>
+      <kbd>j</kbd><span>Next stock in the watchlist</span>
+      <kbd>k</kbd><span>Previous stock</span>
+      <kbd>r</kbd><span>Refresh now</span>
+      <kbd>p</kbd><span>Pause / resume auto-refresh</span>
+      <kbd>a</kbd><span>Jump to alerts</span>
+      <kbd>g</kbd><span>Jump to autotrader</span>
+      <kbd>t</kbd><span>Switch theme (system, light, dark)</span>
+      <kbd>Esc</kbd><span>Close the open stock</span>
+      <kbd>?</kbd><span>This help</span>
+    </div>
+    <form method="dialog"><button>Close</button></form>
+  </dialog>
   <div id="toast" role="status"></div>
   <script src="/static/app.js"></script>
 </body>

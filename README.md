@@ -29,6 +29,24 @@ DEMO_MODE=1 python -m app   # synthetic data, works offline
   history) and caches are git-ignored.
 - **Keep the GitHub repo private** (Settings → General → Danger Zone → Change visibility).
 
+## Using the dashboard
+
+- **Theme:** the header button cycles Auto (follows your device) → Light → Dark. Your
+  choice is remembered and applied before the page draws, so there's no white flash.
+- **Look up any ticker** with the search box, even ones not on your watchlist.
+- **Edit watchlist** adds or removes stocks; saved on the server and used by alerts and
+  the autotrader.
+- **Click a column header** to sort; the sort is remembered. Hover the price and backtest
+  charts for exact values.
+- **Auto-refresh** runs every minute but pauses while the tab is in the background and
+  catches up when you return. The header shows when data was last updated.
+- The tab title shows a count of unseen alerts plus trades waiting for approval, e.g.
+  `(2) Signal Desk`. When the autotrader is on, a **STOP** button stays in the header.
+
+**Keyboard shortcuts** (press `?` in the app): `/` search · `j`/`k` next/previous stock ·
+`Esc` close · `r` refresh · `p` pause auto-refresh · `a` alerts · `g` autotrader ·
+`t` theme.
+
 ## What it pulls
 
 | Signal | Source | Weight | Notes |

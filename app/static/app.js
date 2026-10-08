@@ -9,8 +9,17 @@ const ago = (iso) => {
   return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 };
 const safeUrl = (u) => (/^https?:\/\//.test(u) ? u : "#");
+const compactMoney = (n) => (n < 0 ? "-$" : "$") + Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(n));
 
-let selected = null;
+// Per-browser preferences. Storage can be blocked (private mode), so every access is guarded.
+const pref = {
+  get(k, d = null) { try { const v = localStorage.getItem("sd." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("sd." + k, JSON.stringify(v)); } catch { /* ignore */ } },
+};
+
+let selected = pref.get("selected");
+let sigRows = [];
+let sortKey = pref.get("sortKey", "score"), sortAsc = pref.get("sortAsc", false);
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
@@ -20,13 +29,15 @@ async function api(path, opts) {
   return body;
 }
 
-function toast(msg) {
+function toast(msg, isError = false) {
   const t = $("#toast");
   t.textContent = msg;
+  t.classList.toggle("error", isError);
   t.classList.add("show");
   clearTimeout(t._h);
-  t._h = setTimeout(() => t.classList.remove("show"), 3000);
+  t._h = setTimeout(() => t.classList.remove("show"), isError ? 6000 : 3000);
 }
+const fail = (e) => toast(e.message, true);
 
 function scoreBar(score) {
   const w = Math.abs(score) / 2; // 100 -> 50% of bar
@@ -37,10 +48,32 @@ function scoreBar(score) {
 
 const comp = (v) => (v == null ? `<span class="flat">—</span>` : `<span class="${cls(v)}">${v > 0 ? "+" : ""}${v.toFixed(2)}</span>`);
 
+const SORTERS = {
+  ticker: (s) => s.ticker, price: (s) => s.price ?? -Infinity, day: (s) => s.change_pct ?? -Infinity,
+  score: (s) => s.score, stance: (s) => s.score, conf: (s) => s.confidence,
+  news: (s) => s.components.news ?? -9, social: (s) => s.components.social ?? -9,
+  momentum: (s) => s.components.momentum ?? -9, insiders: (s) => s.components.insiders ?? -9,
+  funds: (s) => s.components.funds ?? -9, congress: (s) => s.components.congress ?? -9,
+};
+
 async function loadSignals() {
-  const rows = await api("/api/signals");
+  sigRows = await api("/api/signals");
+  renderSignals();
+}
+
+function renderSignals() {
+  const key = SORTERS[sortKey] ? sortKey : "score";
+  const rows = [...sigRows].sort((a, b) => {
+    const x = SORTERS[key](a), y = SORTERS[key](b);
+    return (x < y ? -1 : x > y ? 1 : 0) * (sortAsc ? 1 : -1);
+  });
+  document.querySelectorAll("#signals th[data-key]").forEach((th) => {
+    th.classList.toggle("sorted", th.dataset.key === key);
+    th.classList.toggle("asc", th.dataset.key === key && sortAsc);
+    th.setAttribute("aria-sort", th.dataset.key === key ? (sortAsc ? "ascending" : "descending") : "none");
+  });
   $("#signals tbody").innerHTML = rows.map((s) => `
-    <tr data-t="${esc(s.ticker)}" class="${s.ticker === selected ? "sel" : ""}">
+    <tr data-t="${esc(s.ticker)}" tabindex="0" class="${s.ticker === selected ? "sel" : ""}">
       <td><b>${esc(s.ticker)}</b></td>
       <td>${s.price == null ? "—" : "$" + fmt(s.price)}</td>
       <td class="${cls(s.change_pct)}">${s.change_pct == null ? "—" : (s.change_pct > 0 ? "+" : "") + fmt(s.change_pct) + "%"}</td>
@@ -51,25 +84,77 @@ async function loadSignals() {
       <td>${comp(s.components.funds)}</td><td>${comp(s.components.congress)}</td>
       <td>${Math.round(s.confidence * 100)}%</td>
     </tr>`).join("");
-  document.querySelectorAll("#signals tbody tr").forEach((tr) => tr.addEventListener("click", () => showDetail(tr.dataset.t)));
+  document.querySelectorAll("#signals tbody tr").forEach((tr) => {
+    tr.addEventListener("click", () => showDetail(tr.dataset.t).catch(fail));
+    tr.addEventListener("keydown", (e) => { if (e.key === "Enter") showDetail(tr.dataset.t).catch(fail); });
+  });
+}
+
+function linePath(values, w, h, pad = 3) {
+  const min = Math.min(...values), max = Math.max(...values), span = max - min || 1;
+  const xy = values.map((v, i) => [(i / (values.length - 1)) * w, h - pad - ((v - min) / span) * (h - 2 * pad)]);
+  return { xy, pts: xy.map(([x, y]) => `${x},${y}`).join(" ") };
 }
 
 function sparkline(closes) {
   if (closes.length < 2) return "";
-  const min = Math.min(...closes), max = Math.max(...closes), span = max - min || 1;
-  const pts = closes.map((c, i) => `${(i / (closes.length - 1)) * 200},${38 - ((c - min) / span) * 36}`).join(" ");
+  const { pts } = linePath(closes, 260, 48);
   const color = closes.at(-1) >= closes[0] ? "var(--up)" : "var(--down)";
-  return `<polyline fill="none" stroke="${color}" stroke-width="1.5" points="${pts}"/>`;
+  return `<polyline fill="none" stroke="${color}" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" points="${pts}"/>`;
 }
 
-async function showDetail(ticker) {
+// Crosshair + tooltip for a line chart. labelFn(i) returns the tooltip text for point i.
+function attachHover(wrap, svg, values, w, h, labelFn) {
+  wrap.querySelector(".hover-tip")?.remove();
+  if (values.length < 2) return;
+  const { xy } = linePath(values, w, h);
+  const tip = document.createElement("div");
+  tip.className = "hover-tip";
+  tip.hidden = true;
+  wrap.appendChild(tip);
+  const ns = "http://www.w3.org/2000/svg";
+  const vline = document.createElementNS(ns, "line");
+  vline.setAttribute("stroke", "var(--muted)"); vline.setAttribute("stroke-width", "1");
+  vline.setAttribute("vector-effect", "non-scaling-stroke"); vline.setAttribute("y1", 0); vline.setAttribute("y2", h);
+  const dot = document.createElementNS(ns, "circle");
+  dot.setAttribute("r", 4); dot.setAttribute("fill", "var(--text)"); dot.setAttribute("stroke", "var(--card)"); dot.setAttribute("stroke-width", 2);
+  vline.style.display = dot.style.display = "none";
+  svg.append(vline, dot);
+  const move = (clientX) => {
+    const r = svg.getBoundingClientRect();
+    const i = Math.max(0, Math.min(values.length - 1, Math.round(((clientX - r.left) / r.width) * (values.length - 1))));
+    const [x, y] = xy[i];
+    vline.setAttribute("x1", x); vline.setAttribute("x2", x);
+    dot.setAttribute("cx", x); dot.setAttribute("cy", y);
+    vline.style.display = dot.style.display = "";
+    tip.hidden = false;
+    tip.textContent = labelFn(i);
+    tip.style.left = `${(x / w) * r.width}px`;
+    tip.style.top = `${(y / h) * r.height}px`;
+  };
+  const hide = () => { tip.hidden = true; vline.style.display = dot.style.display = "none"; };
+  svg.onpointermove = (e) => move(e.clientX);
+  svg.onpointerleave = hide;
+}
+
+function closeDetail() {
+  selected = null;
+  pref.set("selected", null);
+  $("#detail").hidden = true;
+  document.querySelectorAll("#signals tbody tr").forEach((tr) => tr.classList.remove("sel"));
+}
+
+async function showDetail(ticker, scroll = true) {
   selected = ticker;
+  pref.set("selected", ticker);
   document.querySelectorAll("#signals tbody tr").forEach((tr) => tr.classList.toggle("sel", tr.dataset.t === ticker));
   const d = await api(`/api/ticker/${encodeURIComponent(ticker)}`);
   const s = d.signal;
   $("#detail").hidden = false;
   $("#d-title").innerHTML = `${esc(ticker)} <span class="${s.stance === "bullish" ? "up" : s.stance === "bearish" ? "down" : "flat"}">${fmt(s.score, 1)} · ${s.stance}</span>`;
   $("#d-spark").innerHTML = sparkline(d.closes);
+  attachHover($("#d-spark-wrap"), $("#d-spark"), d.closes, 260, 48,
+    (i) => `${d.dates[i] ? new Date(d.dates[i] + "T12:00").toLocaleDateString([], { month: "short", day: "numeric" }) + " · " : ""}$${fmt(d.closes[i])}`);
   $("#d-news").innerHTML = d.news.map((a) => `
     <li><span class="dot" style="background:var(--${cls(a.sentiment)})"></span>
       <a href="${esc(safeUrl(a.url))}" target="_blank" rel="noopener">${esc(a.title)}</a>
@@ -87,14 +172,14 @@ async function showDetail(ticker) {
     <li><b>${esc(t.member)}</b> <span class="meta">${esc(t.chamber)}</span>
       <span class="${t.side === "buy" ? "up" : "down"}">${t.side === "buy" ? "bought" : "sold"}</span>
       <div class="meta">${money(t.amount_low).replace(".00", "")}–${money(t.amount_high).replace(".00", "")} · traded ${esc(t.traded)} · disclosed ${esc(t.disclosed)}</div></li>`).join("") || `<li class="meta">No disclosed trades</li>`;
-  $("#detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
+  if (scroll) $("#detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 function fundRow(m) {
   const verb = m.prev_shares === 0 ? "opened" : m.shares === 0 ? "exited" : m.change > 0 ? "added" : m.change < 0 ? "trimmed" : "held";
   const pct = m.prev_shares ? ` (${m.change > 0 ? "+" : ""}${fmt((m.change / m.prev_shares) * 100, 0)}%)` : "";
   return `<li><b>${esc(m.fund)}</b> <span class="${cls(m.change)}">${verb}</span> ${esc(m.ticker)}${pct}
-    <div class="meta">${fmt(m.shares, 0)} sh · ${money(m.value_usd).replace(".00", "")} · period ${esc(m.period)}</div></li>`;
+    <div class="meta">${fmt(m.shares, 0)} sh · ${compactMoney(m.value_usd)} · period ${esc(m.period)}</div></li>`;
 }
 
 async function loadSide() {
@@ -127,6 +212,8 @@ async function loadPaper() {
 let lastAlertId = null;
 async function loadAlerts() {
   const { alerts, unseen } = await api("/api/alerts");
+  badge.alerts = unseen;
+  updateTitle();
   $("#unseen").textContent = unseen;
   $("#bell").classList.toggle("has", unseen > 0);
   $("#alerts").innerHTML = alerts.slice(0, 20).map((x) => `
@@ -163,6 +250,9 @@ let tstate = null;
 async function loadTrader() {
   const t = await api("/api/trading");
   tstate = t;
+  badge.proposals = t.proposals.length;
+  updateTitle();
+  $("#header-stop").hidden = t.kill_switch || t.mode === "off";
   document.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.mode === t.mode));
   $("#broker").value = t.broker;
   const kill = $("#kill");
@@ -188,7 +278,7 @@ async function loadTrader() {
       <div class="prop"><button class="buy" data-ok="${p.proposal_id}">Approve</button><button data-no="${p.proposal_id}">Reject</button></div></li>`).join("")
     || `<li class="meta">${t.mode === "approve" ? "Nothing waiting. Ideas appear here during market hours." : "Switch to “Ask me first” to approve each trade."}</li>`;
   document.querySelectorAll("[data-ok]").forEach((b) => b.addEventListener("click", async () => {
-    try { const d = await post(`/api/trading/proposals/${b.dataset.ok}/approve`); toast(`${d.side} ${d.ticker}: ${d.status}`); } catch (e) { toast(e.message); }
+    try { const d = await post(`/api/trading/proposals/${b.dataset.ok}/approve`); toast(`${d.side} ${d.ticker}: ${d.status}`); } catch (e) { fail(e); }
     loadTrader(); loadPaper();
   }));
   document.querySelectorAll("[data-no]").forEach((b) => b.addEventListener("click", async () => {
@@ -209,9 +299,8 @@ async function loadTrader() {
 
 function curveSvg(curve) {
   if (!curve || curve.length < 2) return "";
-  const min = Math.min(...curve), max = Math.max(...curve), span = max - min || 1;
-  const pts = curve.map((v, i) => `${(i / (curve.length - 1)) * 600},${78 - ((v - min) / span) * 74}`).join(" ");
-  return `<svg viewBox="0 0 600 80" preserveAspectRatio="none" aria-label="Equity curve"><polyline fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke" points="${pts}"/></svg>`;
+  const { pts } = linePath(curve, 600, 80);
+  return `<div class="chart-wrap" id="curve-wrap"><svg id="curve" viewBox="0 0 600 80" preserveAspectRatio="none" aria-label="Strategy equity curve"><polyline fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke" stroke-linejoin="round" points="${pts}"/></svg></div>`;
 }
 
 async function loadSim() {
@@ -231,13 +320,82 @@ async function loadSim() {
     <p class="note">${esc(r.from)} to ${esc(r.to)}, your current rules, ${r.cost_bps_per_side} bps cost per trade side.
       ${r.beats_benchmark === false ? "<b>Did not beat simply holding SPY.</b>" : r.beats_benchmark ? "Beat holding SPY over this period (one period proves little)." : ""}
       ${r.demo ? " <b>Demo data: meaningless.</b>" : ""}</p>`;
+  if ($("#curve")) attachHover($("#curve-wrap"), $("#curve"), r.curve, 600, 80,
+    (i) => `${r.dates[i]} · ${money(r.curve[i])} (${r.curve[i] >= r.curve[0] ? "+" : ""}${fmt((r.curve[i] / r.curve[0] - 1) * 100)}%)`);
+}
+
+const badge = { alerts: 0, proposals: 0 };
+function updateTitle() {
+  const n = badge.alerts + badge.proposals;
+  document.title = n ? `(${n}) Signal Desk` : "Signal Desk";
+}
+
+let lastUpdated = null, refreshing = false, paused = pref.get("paused", false);
+function renderUpdated() {
+  const el = $("#updated");
+  if (paused) { el.textContent = "Auto-refresh paused"; el.classList.add("stale"); return; }
+  if (!lastUpdated) { el.textContent = ""; return; }
+  const s = Math.round((Date.now() - lastUpdated) / 1000);
+  el.textContent = `Updated ${s < 60 ? s + "s" : Math.round(s / 60) + "m"} ago`;
+  el.classList.toggle("stale", s > 180);
 }
 
 async function refresh() {
+  if (refreshing) return;
+  refreshing = true;
+  const btn = $("#refresh");
+  btn.disabled = true;
+  btn.classList.add("loading");
   try {
     await Promise.all([loadSignals(), loadSide(), loadPaper(), loadAlerts(), loadTrader()]);
-    if (selected) await showDetail(selected);
-  } catch (e) { toast(e.message); }
+    if (selected) await showDetail(selected, false).catch(closeDetail);  // e.g. a remembered ticker that no longer resolves
+    lastUpdated = Date.now();
+  } catch (e) { fail(e); }
+  finally {
+    refreshing = false;
+    btn.disabled = false;
+    btn.classList.remove("loading");
+    renderUpdated();
+  }
+}
+
+// ---- theme ----
+const THEMES = ["system", "light", "dark"];
+function applyTheme(t) {
+  if (t === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", t);
+  try { t === "system" ? localStorage.removeItem("theme") : localStorage.setItem("theme", t); } catch { /* ignore */ }
+  const btn = $("#theme");
+  btn.textContent = { system: "Auto", light: "Light", dark: "Dark" }[t];
+  btn.title = `Theme: ${t === "system" ? "follows your device" : t} (t to switch)`;
+}
+let theme = (() => { try { return localStorage.getItem("theme") || "system"; } catch { return "system"; } })();
+applyTheme(theme);
+function cycleTheme() {
+  theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+  applyTheme(theme);
+  toast(`Theme: ${theme}`);
+}
+
+// ---- watchlist editor ----
+function renderWatchlistEditor() {
+  const tickers = sigRows.map((s) => s.ticker).sort();
+  $("#wl-editor").innerHTML = tickers.map((t) => `<span class="chip">${esc(t)}<button data-rm="${esc(t)}" aria-label="Remove ${esc(t)}" title="Remove">×</button></span>`).join("")
+    + `<form id="wl-add"><input id="wl-input" placeholder="Add ticker" aria-label="Add ticker" maxlength="10"></form>`;
+  document.querySelectorAll("[data-rm]").forEach((b) => b.addEventListener("click", () => saveWatchlist(tickers.filter((x) => x !== b.dataset.rm))));
+  $("#wl-add").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const t = $("#wl-input").value.trim().toUpperCase();
+    if (t) saveWatchlist([...tickers, t]);
+  });
+}
+async function saveWatchlist(tickers) {
+  try {
+    await api("/api/watchlist", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ tickers }) });
+    await loadSignals();
+    renderWatchlistEditor();
+    $("#wl-input")?.focus();
+  } catch (e) { fail(e); }
 }
 
 $("#trade").addEventListener("submit", async (e) => {
@@ -249,7 +407,7 @@ $("#trade").addEventListener("submit", async (e) => {
       body: JSON.stringify({ ticker: selected, side, qty: Number($("#t-qty").value) }) });
     toast(`Paper ${o.side} ${o.qty} ${o.ticker} @ $${fmt(o.price)}`);
     loadPaper();
-  } catch (err) { toast(err.message); }
+  } catch (err) { fail(err); }
 });
 $("#reset").addEventListener("click", async () => {
   if (!confirm("Reset the paper account? All simulated trades will be deleted.")) return;
@@ -257,7 +415,7 @@ $("#reset").addEventListener("click", async () => {
   loadPaper();
 });
 $("#refresh").addEventListener("click", refresh);
-$("#horizon").addEventListener("change", () => loadBacktest().catch((e) => toast(e.message)));
+$("#horizon").addEventListener("change", () => loadBacktest().catch(fail));
 $("#run-alerts").addEventListener("click", async () => {
   const r = await api("/api/alerts/run", { method: "POST" });
   toast(r.new.length ? `${r.new.length} new alert(s)` : "Scores recorded, no new alerts");
@@ -272,11 +430,11 @@ $("#bell").addEventListener("click", async () => {
 document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", async () => {
   const mode = b.dataset.mode;
   if (mode === "auto" && !confirm(`Turn on fully automatic trading on the ${$("#broker").selectedOptions[0].text}? Orders will be placed without asking you.`)) return;
-  try { await post("/api/trading/mode", { mode, broker: $("#broker").value }); } catch (e) { toast(e.message); }
+  try { await post("/api/trading/mode", { mode, broker: $("#broker").value }); } catch (e) { fail(e); }
   loadTrader();
 }));
 $("#broker").addEventListener("change", async () => {
-  try { await post("/api/trading/mode", { mode: "off", broker: $("#broker").value }); toast("Broker changed; autotrader set to Off"); } catch (e) { toast(e.message); }
+  try { await post("/api/trading/mode", { mode: "off", broker: $("#broker").value }); toast("Broker changed; autotrader set to Off"); } catch (e) { fail(e); }
   loadTrader();
 });
 $("#kill").addEventListener("click", async () => {
@@ -288,11 +446,83 @@ $("#run-trader").addEventListener("click", async () => {
   try {
     const r = await post("/api/trading/run");
     toast(r.skipped || r.error || `${r.actions.length} action(s)`);
-  } catch (e) { toast(e.message); }
+  } catch (e) { fail(e); }
   loadTrader(); loadPaper();
 });
-$("#sim-source").addEventListener("change", () => loadSim().catch((e) => toast(e.message)));
+$("#sim-source").addEventListener("change", () => loadSim().catch(fail));
+document.querySelectorAll("#signals thead th").forEach((th, i) => {
+  const key = ["ticker", "price", "day", "score", "stance", "news", "social", "momentum", "insiders", "funds", "congress", "conf"][i];
+  th.dataset.key = key;
+  th.classList.add("sortable");
+  th.tabIndex = 0;
+  const sort = () => {
+    sortAsc = sortKey === key ? !sortAsc : key === "ticker";
+    sortKey = key;
+    pref.set("sortKey", sortKey); pref.set("sortAsc", sortAsc);
+    renderSignals();
+  };
+  th.addEventListener("click", sort);
+  th.addEventListener("keydown", (e) => { if (e.key === "Enter") sort(); });
+});
+$("#close-detail").addEventListener("click", closeDetail);
+$("#theme").addEventListener("click", cycleTheme);
+$("#help").addEventListener("click", () => $("#keys").showModal());
+$("#header-stop").addEventListener("click", () => $("#kill").click());
+$("#search").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const t = $("#search-input").value.trim().toUpperCase();
+  if (!t) return;
+  $("#search-input").value = "";
+  $("#search-input").blur();
+  showDetail(t).catch(fail);
+});
+$("#edit-wl").addEventListener("click", () => {
+  const ed = $("#wl-editor");
+  ed.hidden = !ed.hidden;
+  $("#edit-wl").setAttribute("aria-expanded", String(!ed.hidden));
+  $("#edit-wl").textContent = ed.hidden ? "Edit watchlist" : "Done";
+  if (!ed.hidden) { renderWatchlistEditor(); $("#wl-input").focus(); }
+});
+
+function moveSelection(step) {
+  const rows = [...document.querySelectorAll("#signals tbody tr[data-t]")];
+  if (!rows.length) return;
+  const i = rows.findIndex((r) => r.dataset.t === selected);
+  const next = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + step))];
+  next.focus();
+  showDetail(next.dataset.t, false).catch(fail);
+}
+
+document.addEventListener("keydown", (e) => {
+  const typing = /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName) || e.target.isContentEditable;
+  if (e.key === "Escape") {
+    if (typing) e.target.blur();
+    else if (!$("#keys").open && selected) closeDetail();
+    return;
+  }
+  if (typing || e.metaKey || e.ctrlKey || e.altKey || $("#keys").open) return;
+  const actions = {
+    "/": () => $("#search-input").focus(),
+    r: refresh,
+    t: cycleTheme,
+    j: () => moveSelection(1),
+    k: () => moveSelection(-1),
+    a: () => $("#alerts-card").scrollIntoView({ behavior: "smooth" }),
+    g: () => $("#trader").scrollIntoView({ behavior: "smooth" }),
+    p: () => { paused = !paused; pref.set("paused", paused); renderUpdated(); toast(paused ? "Auto-refresh paused" : "Auto-refresh on"); if (!paused) refresh(); },
+    "?": () => $("#keys").showModal(),
+  };
+  const fn = actions[e.key];
+  if (fn) { e.preventDefault(); fn(); }
+});
+
+// Refresh every minute, but not while the tab is hidden; catch up as soon as it's visible again.
+setInterval(() => { if (!paused && !document.hidden) refresh(); }, 60_000);
+setInterval(renderUpdated, 5_000);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && !paused && (!lastUpdated || Date.now() - lastUpdated > 60_000)) refresh();
+});
+
 refresh();
-loadBacktest().catch((e) => toast(e.message));
-loadSim().catch((e) => toast(e.message));
-setInterval(refresh, 60_000);
+loadBacktest().catch(fail);
+loadSim().catch(fail);

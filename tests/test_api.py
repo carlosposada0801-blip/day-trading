@@ -92,3 +92,14 @@ def test_trading_endpoints():
 def test_robinhood_callback_is_public_but_inert():
     anon = TestClient(app)
     assert anon.get("/broker/robinhood/callback?code=x&state=y").status_code == 400
+
+
+def test_edit_watchlist():
+    from app.config import settings
+    original = list(settings.watchlist)
+    r = client.put("/api/watchlist", json={"tickers": ["aapl", "PLTR", "aapl", " "]})
+    assert r.json()["watchlist"] == ["AAPL", "PLTR"]
+    assert [s["ticker"] for s in client.get("/api/signals").json()] in (["AAPL", "PLTR"], ["PLTR", "AAPL"])
+    assert client.put("/api/watchlist", json={"tickers": ["<x>"]}).status_code == 400
+    assert client.put("/api/watchlist", json={"tickers": []}).status_code == 422
+    client.put("/api/watchlist", json={"tickers": original})

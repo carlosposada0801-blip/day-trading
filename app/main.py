@@ -24,6 +24,9 @@ from app.trading.trader import state as trader_state
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
+    saved = journal.get("watchlist")
+    if saved:  # a watchlist edited in the dashboard overrides WATCHLIST from .env
+        settings.watchlist[:] = saved
     tasks = []
     if settings.alerts_enabled:
         tasks.append(asyncio.create_task(alerts.loop()))
@@ -108,13 +111,28 @@ async def all_signals():
 @app.get("/api/ticker/{ticker}")
 async def ticker_detail(ticker: str):
     r = await engine.compute(_ticker(ticker))
-    return {"signal": r["signal"], "closes": r["price"].closes if r["price"] else [], "news": r["news"],
+    return {"signal": r["signal"], "closes": r["price"].closes if r["price"] else [],
+            "dates": r["price"].dates if r["price"] else [], "news": r["news"],
             "social": sorted(r["social"], key=lambda p: p.score, reverse=True)[:30],
             "funds": [{**m.model_dump(), "change": m.change} for m in r["funds"]],
             "insiders": sorted(({**t.model_dump(), "value": t.value} for t in r["insiders"]),
                                key=lambda t: t["date"], reverse=True),
             "congress": [t.model_dump() for t in r["congress"]],
             "history": store.history(r["signal"].ticker, since_hours=24 * 30)}
+
+
+class WatchlistIn(BaseModel):
+    tickers: list[str] = Field(min_length=1, max_length=30)
+
+
+@app.put("/api/watchlist")
+async def set_watchlist(w: WatchlistIn):
+    tickers = list(dict.fromkeys(_ticker(t.strip()) for t in w.tickers if t.strip()))
+    if not tickers:
+        raise HTTPException(400, "watchlist can't be empty")
+    settings.watchlist[:] = tickers  # mutate in place: every module reads this same list
+    journal.put("watchlist", tickers)
+    return {"watchlist": tickers}
 
 
 @app.get("/api/trending")
