@@ -56,3 +56,34 @@ def test_13f_parse_and_diff():
     assert moves["AAPL"].change == -100_000_000
     assert moves["OXY"].shares == 0 and moves["OXY"].prev_shares == 15  # full exit, names merged
     assert "BAC" not in moves  # no ticker mapping -> skipped rather than guessed
+
+
+def test_parse_form4_keeps_only_open_market():
+    from app.sources import insiders
+    trades = insiders.parse_form4((FIX / "form4.xml").read_text(), "AAPL")
+    assert [(t.code, t.shares) for t in trades] == [("S", 20000), ("P", 1000)]  # option exercise (M) skipped
+    assert trades[0].insider == "COOK TIMOTHY D" and trades[0].title == "Chief Executive Officer"
+    assert trades[0].value == 20000 * 230.5
+
+
+def test_parse_congress():
+    from app.sources import congress
+    assert congress.parse_amount("$1,001 - $15,000") == (1001, 15000)
+    assert congress.parse_amount("Over $50,000,000") == (50_000_000, 50_000_000)
+    rows = [
+        {"firstName": "Nancy", "lastName": "Example", "type": "Purchase", "amount": "$15,001 - $50,000",
+         "transactionDate": "2026-08-01", "disclosureDate": "2026-08-20", "link": "https://x"},
+        {"firstName": "Bob", "lastName": "Sample", "type": "Sale (Partial)", "amount": "$1,001 - $15,000",
+         "transactionDate": "2026-08-02", "disclosureDate": "2026-08-25"},
+        {"firstName": "Al", "lastName": "X", "type": "Exchange", "amount": "$1,001 - $15,000"},
+    ]
+    trades = congress.parse(rows, "AAPL", "House")
+    assert [(t.member, t.side) for t in trades] == [("Nancy Example", "buy"), ("Bob Sample", "sell")]
+    assert trades[0].amount_mid == 32500.5
+
+
+def test_parse_chart_dates():
+    data = {"chart": {"result": [{"meta": {}, "timestamp": [1790000000, 1790086400, 1790172800],
+                                  "indicators": {"quote": [{"close": [1.0, None, 2.0]}]}}]}}
+    p = prices.parse_chart(data, "X")
+    assert len(p.dates) == len(p.closes) == 2 and p.dates[0] < p.dates[1]

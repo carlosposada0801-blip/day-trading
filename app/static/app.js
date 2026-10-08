@@ -14,6 +14,7 @@ let selected = null;
 
 async function api(path, opts) {
   const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = "/login"; throw new Error("Logged out"); }
   const body = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(body.detail || r.statusText);
   return body;
@@ -46,7 +47,8 @@ async function loadSignals() {
       <td>${fmt(s.score, 1)}${scoreBar(s.score)}</td>
       <td class="stance ${s.stance === "bullish" ? "up" : s.stance === "bearish" ? "down" : "flat"}">${s.stance}</td>
       <td>${comp(s.components.news)}</td><td>${comp(s.components.social)}</td>
-      <td>${comp(s.components.funds)}</td><td>${comp(s.components.momentum)}</td>
+      <td>${comp(s.components.momentum)}</td><td>${comp(s.components.insiders)}</td>
+      <td>${comp(s.components.funds)}</td><td>${comp(s.components.congress)}</td>
       <td>${Math.round(s.confidence * 100)}%</td>
     </tr>`).join("");
   document.querySelectorAll("#signals tbody tr").forEach((tr) => tr.addEventListener("click", () => showDetail(tr.dataset.t)));
@@ -77,6 +79,14 @@ async function showDetail(ticker) {
       <a href="${esc(safeUrl(p.url))}" target="_blank" rel="noopener">${esc(p.text.slice(0, 180))}</a>
       <div class="meta">${esc(p.platform)} · ${esc(p.author)} · ▲${p.score}${p.label ? " · " + p.label : ""} · ${ago(p.created)}</div></li>`).join("") || `<li class="meta">No posts</li>`;
   $("#d-funds").innerHTML = d.funds.map(fundRow).join("") || `<li class="meta">No tracked fund holds this</li>`;
+  $("#d-insiders").innerHTML = d.insiders.map((t) => `
+    <li><b>${esc(t.insider)}</b> <span class="meta">${esc(t.title)}</span>
+      <span class="${t.code === "P" ? "up" : "down"}">${t.code === "P" ? "bought" : "sold"}</span>
+      <div class="meta">${fmt(t.shares, 0)} sh @ $${fmt(t.price)} = ${money(t.value)} · ${esc(t.date)}</div></li>`).join("") || `<li class="meta">No open-market insider trades</li>`;
+  $("#d-congress").innerHTML = d.congress.map((t) => `
+    <li><b>${esc(t.member)}</b> <span class="meta">${esc(t.chamber)}</span>
+      <span class="${t.side === "buy" ? "up" : "down"}">${t.side === "buy" ? "bought" : "sold"}</span>
+      <div class="meta">${money(t.amount_low).replace(".00", "")}–${money(t.amount_high).replace(".00", "")} · traded ${esc(t.traded)} · disclosed ${esc(t.disclosed)}</div></li>`).join("") || `<li class="meta">No disclosed trades</li>`;
   $("#detail").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
@@ -92,6 +102,12 @@ async function loadSide() {
   $("#trending").innerHTML = trend.map((t) => `<li><b>${esc(t.ticker)}</b> · ${t.mentions} mentions · <span class="${cls(t.sentiment)}">${t.sentiment.toFixed(2)}</span></li>`).join("") || `<li class="meta">No data</li>`;
   $("#funds").innerHTML = funds.slice(0, 15).map(fundRow).join("") || `<li class="meta">No data</li>`;
   $("#mode").textContent = cfg.demo_mode ? "DEMO DATA" : "LIVE";
+  $("#ai").hidden = !cfg.ai_sentiment;
+  $("#ai").title = cfg.ai_model ? `Headlines and posts scored by ${cfg.ai_model}` : "";
+  const a = cfg.alerts;
+  $("#alert-rules").textContent = a.enabled
+    ? `Checks every ${a.every_min} min. Fires when a score moves ${a.delta}+ points or turns bullish/bearish.${a.push ? " Push notifications on." : " Set ALERT_WEBHOOK_URL for phone push."}`
+    : "Background alerts are off (ALERTS_ENABLED=0).";
   $("#sources").innerHTML = Object.entries(src.sources).map(([k, v]) => `<span class="${v.ok ? "" : "bad"}" title="${esc(v.error || "ok")}">${v.ok ? "●" : "○"} ${esc(k)}</span>`).join(" &nbsp; ");
 }
 
@@ -108,9 +124,42 @@ async function loadPaper() {
       <span class="${cls(x.unrealized)}" style="float:right">${money(x.unrealized)}</span></li>`).join("") || `<li class="meta">No open positions. Pick a ticker above to paper trade.</li>`}</ul>`;
 }
 
+let lastAlertId = null;
+async function loadAlerts() {
+  const { alerts, unseen } = await api("/api/alerts");
+  $("#unseen").textContent = unseen;
+  $("#bell").classList.toggle("has", unseen > 0);
+  $("#alerts").innerHTML = alerts.slice(0, 20).map((x) => `
+    <li class="${x.seen ? "" : "unseen"}"><span class="${x.kind === "flip" ? "" : cls(x.score - (x.prev_score ?? x.score))}">${esc(x.message)}</span>
+      <div class="meta">${ago(x.ts)}</div></li>`).join("") || `<li class="meta">No alerts yet. They appear as scores move over time.</li>`;
+  const newest = alerts[0]?.id ?? 0;
+  if (lastAlertId !== null && newest > lastAlertId && "Notification" in window && Notification.permission === "granted") {
+    alerts.filter((x) => x.id > lastAlertId).forEach((x) => new Notification("Signal Desk", { body: x.message }));
+  }
+  lastAlertId = newest;
+}
+
+const pct = (v) => (v == null ? "—" : `<span class="${cls(v)}">${v > 0 ? "+" : ""}${fmt(v, 2)}%</span>`);
+function btBlock(title, r) {
+  if (!r.n) return `<div><h3>${title}</h3><p class="meta">Not enough data yet.</p></div>`;
+  return `<div><h3>${title}</h3>
+    <div class="bt-row"><span>Samples</span><b>${r.n}</b></div>
+    <div class="bt-row" title="Rank correlation between score and forward return. Above ~0.05 is meaningful for markets."><span>IC</span><b class="${cls(r.ic ?? 0)}">${r.ic ?? "—"}</b></div>
+    <div class="bt-row" title="How often bullish/bearish calls got the direction right"><span>Hit rate</span><b>${r.hit_rate == null ? "—" : Math.round(r.hit_rate * 100) + "%"} <span class="meta">(${r.calls})</span></b></div>
+    <div class="bt-row"><span>Avg after bullish</span>${pct(r.avg_fwd_return_pct.bullish)}</div>
+    <div class="bt-row"><span>Avg after neutral</span>${pct(r.avg_fwd_return_pct.neutral)}</div>
+    <div class="bt-row"><span>Avg after bearish</span>${pct(r.avg_fwd_return_pct.bearish)}</div>
+    <div class="bt-row"><span>Long − short</span>${pct(r.long_short_pct)}</div></div>`;
+}
+async function loadBacktest() {
+  const b = await api(`/api/backtest?horizon=${$("#horizon").value}`);
+  $("#backtest").innerHTML = `<div class="bt-grid">${btBlock("Full score (recorded)", b.track_record)}${btBlock("Momentum, past year", b.momentum)}</div>
+    <p class="note">${b.snapshots} score snapshots recorded so far; the full-score track record fills in as the app runs. No trading costs included.${b.demo ? " <b>Demo data: these numbers mean nothing.</b>" : ""}</p>`;
+}
+
 async function refresh() {
   try {
-    await Promise.all([loadSignals(), loadSide(), loadPaper()]);
+    await Promise.all([loadSignals(), loadSide(), loadPaper(), loadAlerts()]);
     if (selected) await showDetail(selected);
   } catch (e) { toast(e.message); }
 }
@@ -132,5 +181,18 @@ $("#reset").addEventListener("click", async () => {
   loadPaper();
 });
 $("#refresh").addEventListener("click", refresh);
+$("#horizon").addEventListener("change", () => loadBacktest().catch((e) => toast(e.message)));
+$("#run-alerts").addEventListener("click", async () => {
+  const r = await api("/api/alerts/run", { method: "POST" });
+  toast(r.new.length ? `${r.new.length} new alert(s)` : "Scores recorded, no new alerts");
+  loadAlerts(); loadBacktest();
+});
+$("#bell").addEventListener("click", async () => {
+  if ("Notification" in window && Notification.permission === "default") Notification.requestPermission();
+  await api("/api/alerts/seen", { method: "POST" });
+  loadAlerts();
+  $("#alerts-card").scrollIntoView({ behavior: "smooth" });
+});
 refresh();
+loadBacktest().catch((e) => toast(e.message));
 setInterval(refresh, 60_000);

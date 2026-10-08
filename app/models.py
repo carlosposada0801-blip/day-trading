@@ -45,6 +45,7 @@ class PriceInfo(BaseModel):
     price: float
     prev_close: float
     closes: list[float]  # recent daily closes, oldest first
+    dates: list[str] = []  # ISO dates matching closes
 
     @property
     def change_pct(self) -> float:
@@ -59,4 +60,36 @@ class Signal(BaseModel):
     stance: Literal["bullish", "bearish", "neutral"]
     confidence: float  # 0..1, how much data backs the score
     components: dict[str, Optional[float]]  # each -1..1, None when no data
+    ai: bool = False  # True when Claude scored the text sentiment
     counts: dict[str, int]
+
+
+class InsiderTrade(BaseModel):
+    ticker: str
+    insider: str
+    title: str  # officer title / "Director" / "10% owner"
+    code: str  # SEC transaction code: P = open-market buy, S = open-market sale
+    shares: float
+    price: float
+    date: str
+    url: str = ""
+
+    @property
+    def value(self) -> float:
+        return self.shares * self.price
+
+
+class CongressTrade(BaseModel):
+    ticker: str
+    member: str
+    chamber: str  # "House" / "Senate"
+    side: Literal["buy", "sell"]
+    amount_low: int
+    amount_high: int
+    traded: str
+    disclosed: str
+    url: str = ""
+
+    @property
+    def amount_mid(self) -> float:
+        return (self.amount_low + self.amount_high) / 2

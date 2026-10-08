@@ -1,10 +1,10 @@
-"""Blend news, social, fund positioning and momentum into one score per ticker."""
+"""Blend news, social, insider, fund, congressional and momentum signals into one score per ticker."""
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from app.models import Article, FundMove, PriceInfo, Signal, SocialPost
+from app.models import Article, CongressTrade, FundMove, InsiderTrade, PriceInfo, Signal, SocialPost
 
-WEIGHTS = {"news": 0.35, "social": 0.30, "funds": 0.15, "momentum": 0.20}
+WEIGHTS = {"news": 0.30, "social": 0.25, "momentum": 0.15, "insiders": 0.15, "funds": 0.10, "congress": 0.05}
 STANCE_THRESHOLD = 20  # |score| above this is labelled bullish/bearish
 
 
@@ -49,13 +49,42 @@ def momentum_component(price: PriceInfo | None) -> float | None:
     return math.tanh(ret5 / 0.05)  # a 5% weekly move ~ 0.76
 
 
+def _days_ago(iso: str) -> float:
+    try:
+        return (date.today() - date.fromisoformat(iso[:10])).days
+    except ValueError:
+        return 90.0
+
+
+def insiders_component(trades: list[InsiderTrade]) -> float | None:
+    """Net open-market buying by insiders over ~90 days. Sales count a quarter as much as buys,
+    because insiders sell for many non-informative reasons."""
+    recent = [t for t in trades if _days_ago(t.date) <= 90 and t.value > 0]
+    if not recent:
+        return None
+    buys = sum(t.value for t in recent if t.code == "P")
+    sells = sum(t.value for t in recent if t.code == "S")
+    return math.tanh((buys - 0.25 * sells) / 500_000)
+
+
+def congress_component(trades: list[CongressTrade]) -> float | None:
+    recent = [t for t in trades if _days_ago(t.traded) <= 120]
+    if not recent:
+        return None
+    net = sum(t.amount_mid * (1 if t.side == "buy" else -1) for t in recent)
+    return math.tanh(net / 100_000)
+
+
 def build(ticker: str, price: PriceInfo | None, articles: list[Article],
-          posts: list[SocialPost], moves: list[FundMove]) -> Signal:
+          posts: list[SocialPost], moves: list[FundMove],
+          insiders: list[InsiderTrade] = (), congress: list[CongressTrade] = (), ai: bool = False) -> Signal:
     comps = {
         "news": news_component(articles),
         "social": social_component(posts),
-        "funds": funds_component(moves),
         "momentum": momentum_component(price),
+        "insiders": insiders_component(list(insiders)),
+        "funds": funds_component(moves),
+        "congress": congress_component(list(congress)),
     }
     available = {k: v for k, v in comps.items() if v is not None}
     wsum = sum(WEIGHTS[k] for k in available)
@@ -70,5 +99,7 @@ def build(ticker: str, price: PriceInfo | None, articles: list[Article],
         change_pct=round(price.change_pct, 2) if price else None,
         score=round(score, 1), stance=stance, confidence=confidence,
         components={k: (round(v, 3) if v is not None else None) for k, v in comps.items()},
-        counts={"news": len(articles), "social": len(posts), "funds": len(moves)},
+        counts={"news": len(articles), "social": len(posts), "funds": len(moves),
+                "insiders": len(insiders), "congress": len(congress)},
+        ai=ai,
     )

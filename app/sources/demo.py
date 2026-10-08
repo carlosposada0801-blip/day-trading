@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from app import sentiment
 from app.config import TRACKED_FUNDS
-from app.models import Article, FundMove, PriceInfo, SocialPost
+from app.models import Article, CongressTrade, FundMove, InsiderTrade, PriceInfo, SocialPost
 
 _BASE_PRICES = {"AAPL": 228, "NVDA": 132, "TSLA": 251, "MSFT": 418, "AMD": 158, "AMZN": 186,
                 "META": 589, "GOOGL": 165, "PLTR": 41, "GME": 22, "SPY": 571}
@@ -40,14 +40,17 @@ def _rng(*parts) -> random.Random:
     return random.Random("|".join(str(p) for p in (*parts, date.today().isoformat())))
 
 
-def price(ticker: str) -> PriceInfo:
+def price(ticker: str, days: int = 22) -> PriceInfo:
     rng = _rng("price", ticker)
     p = _BASE_PRICES.get(ticker, rng.uniform(20, 300))
-    closes = []
-    for _ in range(22):
-        p *= 1 + rng.gauss(0.001, 0.02)
-        closes.append(round(p, 2))
-    return PriceInfo(ticker=ticker, price=closes[-1], prev_close=closes[-2], closes=closes)
+    # Walk backwards from the base price so the latest close stays near it whatever `days` is.
+    closes = [p]
+    for _ in range(days - 1):
+        closes.append(closes[-1] / (1 + rng.gauss(0.001, 0.02)))
+    closes = [round(c, 2) for c in reversed(closes)]
+    today = date.today()
+    dates = [(today - timedelta(days=days - 1 - i)).isoformat() for i in range(days)]
+    return PriceInfo(ticker=ticker, price=closes[-1], prev_close=closes[-2], closes=closes, dates=dates)
 
 
 def news(ticker: str) -> list[Article]:
@@ -83,4 +86,33 @@ def fund_moves(tickers: list[str]) -> list[FundMove]:
             shares = max(0, int(prev * rng.uniform(0.3, 1.8)) if prev else rng.randint(50_000, 1_000_000))
             out.append(FundMove(fund=fund, ticker=t, issuer=t, shares=shares, prev_shares=prev,
                                 value_usd=int(shares * price(t).price), period="demo"))
+    return out
+
+
+_INSIDERS = [("Jane Rivera", "CEO"), ("Mark Chen", "CFO"), ("Priya Shah", "Director"), ("Tom Okafor", "COO")]
+_MEMBERS = [("Rep. A. Example", "House"), ("Sen. B. Sample", "Senate"), ("Rep. C. Demo", "House")]
+
+
+def insiders(ticker: str) -> list[InsiderTrade]:
+    rng = _rng("insider", ticker)
+    px = price(ticker).price
+    out = []
+    for i in range(rng.randint(0, 4)):
+        name, title = rng.choice(_INSIDERS)
+        out.append(InsiderTrade(ticker=ticker, insider=name, title=title, code=rng.choice("PSS"),
+                                shares=rng.randint(1_000, 40_000), price=round(px * rng.uniform(0.9, 1.05), 2),
+                                date=(date.today() - timedelta(days=rng.randint(1, 60))).isoformat(), url="#"))
+    return out
+
+
+def congress(ticker: str) -> list[CongressTrade]:
+    rng = _rng("congress", ticker)
+    out = []
+    for _ in range(rng.randint(0, 3)):
+        name, chamber = rng.choice(_MEMBERS)
+        low, high = rng.choice([(1_001, 15_000), (15_001, 50_000), (50_001, 100_000), (100_001, 250_000)])
+        traded = date.today() - timedelta(days=rng.randint(10, 80))
+        out.append(CongressTrade(ticker=ticker, member=name, chamber=chamber, side=rng.choice(["buy", "sell"]),
+                                 amount_low=low, amount_high=high, traded=traded.isoformat(),
+                                 disclosed=(traded + timedelta(days=30)).isoformat(), url="#"))
     return out

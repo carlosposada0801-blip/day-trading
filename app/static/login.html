@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signal Desk</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="login">
+  <form method="post" action="/login" class="card login-card">
+    <h1>Signal Desk</h1>
+    <p class="meta">Private. Enter your password.</p>
+    <input type="password" name="password" autocomplete="current-password" autofocus required aria-label="Password">
+    <button type="submit" class="buy">Unlock</button>
+    <p class="meta err" id="err"></p>
+  </form>
+  <script>
+    const e = new URLSearchParams(location.search).get("error");
+    if (e) document.getElementById("err").textContent = e === "locked" ? "Too many attempts. Try again in 15 minutes." : "Wrong password.";
+  </script>
+</body>
+</html>

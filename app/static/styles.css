@@ -14,6 +14,17 @@ h2 { font-size: 15px; margin: 0 0 10px; }
 h3 { font-size: 13px; margin: 0 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
 .pill { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--accent); color: #fff; }
 .sources { font-size: 12px; color: var(--muted); flex: 1; }
+header form { margin: 0; }
+.ghost-pill { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+.ghost-btn { color: var(--muted); }
+button.small { font-size: 12px; padding: 2px 8px; margin-left: 6px; }
+#bell.has { border-color: var(--down); color: var(--down); }
+h2 select { margin-left: 6px; font: inherit; font-size: 12px; background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+.bt-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.bt-grid h3 { margin-top: 4px; }
+.bt-row { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.feed li.unseen { border-left: 3px solid var(--accent); padding-left: 6px; }
+.note { font-size: 12px; color: var(--muted); margin: 8px 0 0; }
 .sources .bad { color: var(--down); }
 .disclaimer { margin: 8px 20px 0; font-size: 12px; color: var(--muted); }
 main { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; padding: 16px 20px 40px; }
@@ -42,6 +53,7 @@ ol.feed { list-style: decimal inside; }
 button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); cursor: pointer; }
 button.buy { background: var(--up); color: #fff; border: 0; } button.sell { background: var(--down); color: #fff; border: 0; }
 button.ghost { margin-top: 10px; font-size: 12px; color: var(--muted); }
+h2 button.ghost { margin-top: 0; }
 .trade { display: flex; gap: 6px; margin-left: auto; }
 .trade input { width: 80px; padding: 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
 .kpis { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 10px; }
@@ -49,3 +61,7 @@ button.ghost { margin-top: 10px; font-size: 12px; color: var(--muted); }
 #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none; }
 #toast.show { opacity: 1; }
 @media (max-width: 600px) { header, main { padding-left: 16px; padding-right: 16px; } .disclaimer { margin: 8px 16px 0; } }
+body.login { display: grid; place-items: center; min-height: 100vh; padding: 16px; }
+.login-card { width: 100%; max-width: 340px; display: grid; gap: 10px; }
+.login-card input { padding: 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; }
+.err { color: var(--down); min-height: 1em; margin: 0; }

@@ -41,3 +41,23 @@ def test_upvotes_weight_social():
 def test_fund_exit_is_bearish():
     m = FundMove(fund="F", ticker="X", issuer="X", shares=0, prev_shares=100, value_usd=0, period="p")
     assert signals.funds_component([m]) < -0.9
+
+
+def test_insider_buying_is_bullish_and_selling_weighs_less():
+    from datetime import date
+    from app.models import InsiderTrade
+    today = date.today().isoformat()
+    buy = InsiderTrade(ticker="X", insider="a", title="CEO", code="P", shares=10_000, price=50, date=today)
+    sell = InsiderTrade(ticker="X", insider="b", title="CFO", code="S", shares=10_000, price=50, date=today)
+    assert signals.insiders_component([buy]) > 0.6
+    assert signals.insiders_component([buy, sell]) > 0  # same $ sold doesn't cancel a buy
+    old = buy.model_copy(update={"date": "2020-01-01"})
+    assert signals.insiders_component([old]) is None
+
+
+def test_congress_component():
+    from datetime import date
+    from app.models import CongressTrade
+    t = CongressTrade(ticker="X", member="m", chamber="House", side="sell", amount_low=100_001,
+                      amount_high=250_000, traded=date.today().isoformat(), disclosed="")
+    assert signals.congress_component([t]) < -0.9

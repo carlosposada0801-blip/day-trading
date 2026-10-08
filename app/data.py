@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 
 from app import cache
 from app.config import settings
-from app.models import Article, FundMove, PriceInfo, SocialPost
-from app.sources import demo, news, portfolios, prices, social
+from app.models import Article, CongressTrade, FundMove, InsiderTrade, PriceInfo, SocialPost
+from app.sources import congress, demo, insiders, news, portfolios, prices, social
 
 log = logging.getLogger(__name__)
 status: dict[str, dict] = {}
@@ -70,3 +70,25 @@ async def get_fund_moves() -> list[FundMove]:
         return demo.fund_moves(settings.watchlist)
     # 13F data changes quarterly; refresh every 6 hours.
     return await _safe("sec_13f", "13f", 6 * 3600, portfolios.fetch_all, [])
+
+
+async def get_history(ticker: str) -> PriceInfo | None:
+    """One year of daily closes, for backtesting."""
+    if settings.demo_mode:
+        return demo.price(ticker, days=252)
+    return await _safe("prices", f"hist:{ticker}", 3600, lambda: prices.fetch(ticker, "1y"), None)
+
+
+async def get_insiders(ticker: str) -> list[InsiderTrade]:
+    if settings.demo_mode:
+        return demo.insiders(ticker)
+    return await _safe("sec_form4", f"form4:{ticker}", 3 * 3600, lambda: insiders.fetch(ticker), [])
+
+
+async def get_congress(ticker: str) -> list[CongressTrade]:
+    if settings.demo_mode:
+        return demo.congress(ticker)
+    if not settings.fmp_api_key:
+        status["congress"] = {"ok": False, "error": "set FMP_API_KEY to enable", "checked": None}
+        return []
+    return await _safe("congress", f"congress:{ticker}", 6 * 3600, lambda: congress.fetch(ticker), [])

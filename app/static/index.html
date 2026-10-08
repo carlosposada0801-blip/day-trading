@@ -11,7 +11,10 @@
     <h1>Signal Desk</h1>
     <span id="mode" class="pill"></span>
     <span id="sources" class="sources"></span>
+    <span id="ai" class="pill ghost-pill" hidden>AI sentiment</span>
+    <button id="bell" title="Alerts">🔔 <span id="unseen">0</span></button>
     <button id="refresh">Refresh</button>
+    <form method="post" action="/logout"><button type="submit" class="ghost-btn">Log out</button></form>
   </header>
   <p class="disclaimer">Research and paper-trading tool. Signals are heuristic summaries of public chatter and filings, not financial advice. No real orders are placed.</p>
 
@@ -22,7 +25,8 @@
         <thead><tr>
           <th>Ticker</th><th>Price</th><th>Day</th><th>Score</th><th>Stance</th>
           <th title="Headline sentiment">News</th><th title="Reddit / StockTwits sentiment">Social</th>
-          <th title="13F position changes by tracked funds">Funds</th><th title="5-day price move">Momentum</th><th>Conf.</th>
+          <th title="5-day price move">Momentum</th><th title="SEC Form 4 open-market buys vs sells">Insiders</th>
+          <th title="13F position changes by tracked funds">Funds</th><th title="House/Senate disclosed trades">Congress</th><th>Conf.</th>
         </tr></thead>
         <tbody></tbody>
       </table>
@@ -41,8 +45,25 @@
       <div class="cols">
         <div><h3>News</h3><ul id="d-news" class="feed"></ul></div>
         <div><h3>Social</h3><ul id="d-social" class="feed"></ul></div>
+        <div><h3>Insider trades (Form 4)</h3><ul id="d-insiders" class="feed"></ul></div>
+        <div><h3>Congress trades</h3><ul id="d-congress" class="feed"></ul></div>
         <div><h3>Fund moves (13F)</h3><ul id="d-funds" class="feed"></ul></div>
       </div>
+    </section>
+
+    <section class="card" id="alerts-card">
+      <h2>Alerts <button id="run-alerts" class="ghost small">Check now</button></h2>
+      <p class="meta" id="alert-rules"></p>
+      <ul id="alerts" class="feed"></ul>
+    </section>
+
+    <section class="card">
+      <h2>Backtest
+        <select id="horizon" aria-label="Holding period">
+          <option value="1">1 day</option><option value="5" selected>5 days</option><option value="20">20 days</option>
+        </select>
+      </h2>
+      <div id="backtest"></div>
     </section>
 
     <section class="card">
