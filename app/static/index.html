@@ -16,7 +16,7 @@
     <button id="refresh">Refresh</button>
     <form method="post" action="/logout"><button type="submit" class="ghost-btn">Log out</button></form>
   </header>
-  <p class="disclaimer">Research and paper-trading tool. Signals are heuristic summaries of public chatter and filings, not financial advice. No real orders are placed.</p>
+  <p class="disclaimer">Signals are heuristic summaries of public chatter and filings, not financial advice. Real orders are placed only when the Autotrader is connected to Robinhood and switched on.</p>
 
   <main>
     <section class="card wide">
@@ -30,6 +30,42 @@
         </tr></thead>
         <tbody></tbody>
       </table>
+    </section>
+
+    <section class="card wide" id="trader">
+      <div class="trader-head">
+        <h2>Autotrader</h2>
+        <div class="seg" role="group" aria-label="Mode">
+          <button data-mode="off">Off</button><button data-mode="approve">Ask me first</button><button data-mode="auto">Automatic</button>
+        </div>
+        <select id="broker" aria-label="Broker">
+          <option value="sim">Practice account</option><option value="robinhood">Robinhood</option>
+        </select>
+        <button id="run-trader" class="ghost small">Run now</button>
+        <span id="trader-status" class="meta"></span>
+        <button id="kill" class="kill">STOP ALL TRADING</button>
+      </div>
+      <div id="rh" class="rh meta"></div>
+      <div class="cols">
+        <div>
+          <h3>Waiting for your approval</h3>
+          <ul id="proposals" class="feed"></ul>
+          <h3 style="margin-top:14px">Rules <span class="meta">(edit strategy.toml)</span></h3>
+          <div id="rules" class="meta"></div>
+        </div>
+        <div class="span2">
+          <h3>Decision journal <a href="/api/trading/journal.csv" class="meta">Download CSV</a></h3>
+          <div class="journal"><table id="journal"><thead><tr>
+            <th>Time</th><th>Stock</th><th>Action</th><th>Qty</th><th>Price</th><th>Status</th><th>Why</th>
+          </tr></thead><tbody></tbody></table></div>
+        </div>
+      </div>
+      <h3 style="margin-top:14px">Rules backtest
+        <select id="sim-source" aria-label="Score source">
+          <option value="momentum">Momentum, past year</option><option value="recorded">Recorded full scores</option>
+        </select>
+      </h3>
+      <div id="sim"></div>
     </section>
 
     <section class="card wide" id="detail" hidden>

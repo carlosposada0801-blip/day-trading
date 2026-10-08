@@ -1,0 +1,17 @@
+# systemd unit for running Signal Desk on a Linux server without Docker.
+# Install: sudo cp deploy/signal-desk.service /etc/systemd/system/ && sudo systemctl enable --now signal-desk
+[Unit]
+Description=Signal Desk
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=signaldesk
+WorkingDirectory=/opt/signal-desk
+ExecStart=/opt/signal-desk/.venv/bin/python -m app
+Restart=always
+RestartSec=10
+# .env in WorkingDirectory is read by the app itself
+
+[Install]
+WantedBy=multi-user.target

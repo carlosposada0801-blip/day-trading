@@ -157,9 +157,85 @@ async function loadBacktest() {
     <p class="note">${b.snapshots} score snapshots recorded so far; the full-score track record fills in as the app runs. No trading costs included.${b.demo ? " <b>Demo data: these numbers mean nothing.</b>" : ""}</p>`;
 }
 
+const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+let tstate = null;
+
+async function loadTrader() {
+  const t = await api("/api/trading");
+  tstate = t;
+  document.querySelectorAll(".seg button").forEach((b) => b.classList.toggle("on", b.dataset.mode === t.mode));
+  $("#broker").value = t.broker;
+  const kill = $("#kill");
+  kill.textContent = t.kill_switch ? "Resume (kill switch on)" : "STOP ALL TRADING";
+  kill.classList.toggle("resume", t.kill_switch);
+  const s = t.last_summary;
+  $("#trader-status").textContent = `Market ${t.market_open ? "open" : "closed"}` +
+    (t.last_cycle ? ` · last run ${ago(t.last_cycle)}` : "") + (s?.skipped ? ` · ${s.skipped}` : s?.error ? ` · ${s.error}` : "");
+  const rh = t.robinhood;
+  $("#rh").innerHTML = t.broker !== "robinhood" ? "Practice account: simulated fills against your paper portfolio. No real money."
+    : rh.login_url ? `Sign in to Robinhood to finish connecting: <a href="${esc(safeUrl(rh.login_url))}" target="_blank" rel="noopener">open Robinhood login</a>`
+    : rh.connected ? `Robinhood connected (${rh.tools.length} tools). Orders go only to your Agentic account. <button id="rh-disc">Disconnect</button>`
+    : `Robinhood not connected. <button id="rh-conn">Connect Robinhood</button>${rh.last_connect?.error ? ` <span class="down">${esc(rh.last_connect.error)}</span>` : ""}${rh.connecting ? " Connecting…" : ""}`;
+  $("#rh-conn")?.addEventListener("click", async () => {
+    const r = await post("/api/broker/robinhood/connect");
+    if (r.login_url) window.open(r.login_url, "_blank", "noopener");
+    loadTrader();
+  });
+  $("#rh-disc")?.addEventListener("click", async () => { await post("/api/broker/robinhood/disconnect"); loadTrader(); });
+  $("#proposals").innerHTML = t.proposals.map((p) => `
+    <li><b class="${p.side === "buy" ? "up" : "down"}">${p.side.toUpperCase()}</b> ${fmt(p.qty, 0)} <b>${esc(p.ticker)}</b> @ ~$${fmt(p.price)}
+      <div class="meta">${esc(p.reasons.join("; "))} · expires ${ago(p.expires).replace(" ago", "")}</div>
+      <div class="prop"><button class="buy" data-ok="${p.proposal_id}">Approve</button><button data-no="${p.proposal_id}">Reject</button></div></li>`).join("")
+    || `<li class="meta">${t.mode === "approve" ? "Nothing waiting. Ideas appear here during market hours." : "Switch to “Ask me first” to approve each trade."}</li>`;
+  document.querySelectorAll("[data-ok]").forEach((b) => b.addEventListener("click", async () => {
+    try { const d = await post(`/api/trading/proposals/${b.dataset.ok}/approve`); toast(`${d.side} ${d.ticker}: ${d.status}`); } catch (e) { toast(e.message); }
+    loadTrader(); loadPaper();
+  }));
+  document.querySelectorAll("[data-no]").forEach((b) => b.addEventListener("click", async () => {
+    await post(`/api/trading/proposals/${b.dataset.no}/reject`); loadTrader();
+  }));
+  $("#journal tbody").innerHTML = t.decisions.map((d) => `<tr>
+    <td>${new Date(d.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
+    <td><b>${esc(d.ticker)}</b></td><td class="${d.side === "buy" ? "up" : "down"}">${d.side}</td><td>${fmt(d.qty, 0)}</td>
+    <td>${d.fill_price ? "$" + fmt(d.fill_price) : d.limit_price ? "lim $" + fmt(d.limit_price) : "$" + fmt(d.price)}</td>
+    <td class="st-${esc(d.status)}">${esc(d.status)}</td><td>${esc([...d.reasons, d.detail].filter(Boolean).join(" · "))}</td></tr>`).join("")
+    || `<tr><td colspan="7" class="meta">No decisions yet.</td></tr>`;
+  const r = t.rules;
+  $("#rules").innerHTML = `Buy: score ≥ ${r.entry.min_score}, confidence ≥ ${Math.round(r.entry.min_confidence * 100)}%, ${r.sizing.position_pct}% per position, max ${r.sizing.max_positions}.<br>
+    Sell: −${r.exit.stop_loss_pct}% stop, +${r.exit.take_profit_pct}% target, score &lt; ${r.exit.exit_score_below}, or ${r.exit.max_hold_days} days${r.exit.close_at_eod ? ", and everything before the close" : ""}.<br>
+    Limits: ${r.risk.daily_loss_limit_pct}% daily loss, ${r.risk.max_trades_per_day} trades/day, $${fmt(r.risk.max_order_usd, 0)}/order,
+    ${r.risk.max_day_trades_per_5d < 0 ? "no day-trade cap" : r.risk.max_day_trades_per_5d + " day trades per 5 days"}${r.risk.avoid_wash_sales ? ", wash-sale guard" : ""}. Limit orders only.`;
+}
+
+function curveSvg(curve) {
+  if (!curve || curve.length < 2) return "";
+  const min = Math.min(...curve), max = Math.max(...curve), span = max - min || 1;
+  const pts = curve.map((v, i) => `${(i / (curve.length - 1)) * 600},${78 - ((v - min) / span) * 74}`).join(" ");
+  return `<svg viewBox="0 0 600 80" preserveAspectRatio="none" aria-label="Equity curve"><polyline fill="none" stroke="var(--accent)" stroke-width="1.5" vector-effect="non-scaling-stroke" points="${pts}"/></svg>`;
+}
+
+async function loadSim() {
+  const r = await api(`/api/trading/backtest?source=${$("#sim-source").value}`);
+  if (!r.total_return_pct && r.total_return_pct !== 0) {
+    $("#sim").innerHTML = `<p class="meta">Not enough history yet (${r.days} days).</p>`;
+    return;
+  }
+  $("#sim").innerHTML = `<div class="sim-stats">
+      <div><span class="meta">Strategy</span><b class="${cls(r.total_return_pct)}">${r.total_return_pct > 0 ? "+" : ""}${fmt(r.total_return_pct)}%</b></div>
+      <div><span class="meta">Holding SPY</span><b>${r.benchmark_return_pct == null ? "—" : (r.benchmark_return_pct > 0 ? "+" : "") + fmt(r.benchmark_return_pct) + "%"}</b></div>
+      <div><span class="meta">Worst drop</span><b class="down">${fmt(r.max_drawdown_pct)}%</b></div>
+      <div><span class="meta">Trades</span><b>${r.trades}</b></div>
+      <div><span class="meta">Winners</span><b>${r.win_rate == null ? "—" : Math.round(r.win_rate * 100) + "%"}</b></div>
+      <div><span class="meta">Avg trade</span><b class="${cls(r.avg_trade_pct ?? 0)}">${r.avg_trade_pct == null ? "—" : fmt(r.avg_trade_pct) + "%"}</b></div>
+    </div>${curveSvg(r.curve)}
+    <p class="note">${esc(r.from)} to ${esc(r.to)}, your current rules, ${r.cost_bps_per_side} bps cost per trade side.
+      ${r.beats_benchmark === false ? "<b>Did not beat simply holding SPY.</b>" : r.beats_benchmark ? "Beat holding SPY over this period (one period proves little)." : ""}
+      ${r.demo ? " <b>Demo data: meaningless.</b>" : ""}</p>`;
+}
+
 async function refresh() {
   try {
-    await Promise.all([loadSignals(), loadSide(), loadPaper(), loadAlerts()]);
+    await Promise.all([loadSignals(), loadSide(), loadPaper(), loadAlerts(), loadTrader()]);
     if (selected) await showDetail(selected);
   } catch (e) { toast(e.message); }
 }
@@ -193,6 +269,30 @@ $("#bell").addEventListener("click", async () => {
   loadAlerts();
   $("#alerts-card").scrollIntoView({ behavior: "smooth" });
 });
+document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", async () => {
+  const mode = b.dataset.mode;
+  if (mode === "auto" && !confirm(`Turn on fully automatic trading on the ${$("#broker").selectedOptions[0].text}? Orders will be placed without asking you.`)) return;
+  try { await post("/api/trading/mode", { mode, broker: $("#broker").value }); } catch (e) { toast(e.message); }
+  loadTrader();
+}));
+$("#broker").addEventListener("change", async () => {
+  try { await post("/api/trading/mode", { mode: "off", broker: $("#broker").value }); toast("Broker changed; autotrader set to Off"); } catch (e) { toast(e.message); }
+  loadTrader();
+});
+$("#kill").addEventListener("click", async () => {
+  if (tstate?.kill_switch) { await post("/api/trading/resume"); toast("Kill switch released. Autotrader is Off until you pick a mode."); }
+  else { const r = await post("/api/trading/kill"); toast(r.message); }
+  loadTrader();
+});
+$("#run-trader").addEventListener("click", async () => {
+  try {
+    const r = await post("/api/trading/run");
+    toast(r.skipped || r.error || `${r.actions.length} action(s)`);
+  } catch (e) { toast(e.message); }
+  loadTrader(); loadPaper();
+});
+$("#sim-source").addEventListener("change", () => loadSim().catch((e) => toast(e.message)));
 refresh();
 loadBacktest().catch((e) => toast(e.message));
+loadSim().catch((e) => toast(e.message));
 setInterval(refresh, 60_000);

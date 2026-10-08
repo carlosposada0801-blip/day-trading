@@ -1,0 +1,44 @@
+# Signal Desk autotrader rules. Edit, then restart the app.
+# Every limit here is enforced in code before any order is sent.
+
+[entry]
+min_score = 40            # only buy when the blended score is at least this
+min_confidence = 0.6      # ...and at least this much data backs it (0-1)
+# Optional: require specific components to agree, e.g. { insiders = 0.1, news = 0 }
+min_components = {}
+
+[exit]
+stop_loss_pct = 8         # sell if down this much from your average cost
+take_profit_pct = 15      # sell if up this much
+exit_score_below = 0      # sell if the score falls below this
+max_hold_days = 20        # sell after holding this long
+close_at_eod = false      # true = day-trade style: flatten everything before the close
+
+[sizing]
+position_pct = 10         # size of each new position, % of account equity
+max_positions = 5
+
+[risk]
+daily_loss_limit_pct = 3  # halt new buys for the day if equity falls this much from the open
+max_trades_per_day = 6
+max_order_usd = 2000      # hard cap on any single order
+max_position_pct = 20     # no position may grow past this % of equity
+max_failed_sources = 1    # skip new buys if more data sources than this are failing
+# Pattern-day-trader limit. The SEC approved removing the PDT rule in April 2026 but brokers
+# have until Oct 2027 to switch. Set to -1 only after confirming Robinhood no longer applies it.
+max_day_trades_per_5d = 3
+avoid_wash_sales = true   # don't rebuy within 30 days of selling that stock at a loss
+no_trade_open_minutes = 15
+no_trade_close_minutes = 15
+limit_band_pct = 0.5      # limit orders at last price +/- this %, never market orders
+
+[schedule]
+interval_min = 5          # how often the autotrader runs during market hours
+proposal_ttl_min = 15     # approval requests expire after this (prices go stale)
+
+[robinhood]
+mcp_url = "https://agent.robinhood.com/mcp/trading"
+# If Robinhood names its tools differently, map them here, e.g. positions = "get_equity_positions"
+tools = {}
+# Fixed extra arguments added to every order, e.g. { account_number = "..." }
+order_args = {}

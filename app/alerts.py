@@ -4,10 +4,9 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 
-import httpx
-
 from app import engine, store
 from app.config import settings
+from app.notify import push
 
 log = logging.getLogger(__name__)
 COOLDOWN = timedelta(hours=2)  # at most one alert per ticker per window
@@ -31,18 +30,7 @@ def evaluate(ticker: str, score: float, stance: str, recent: list[dict]) -> list
 
 
 async def notify(alert: dict) -> None:
-    url = settings.alert_webhook_url
-    if not url:
-        return
-    try:
-        async with httpx.AsyncClient(timeout=10) as c:
-            if "ntfy" in url:
-                await c.post(url, content=alert["message"].encode(),
-                             headers={"Title": f"Signal Desk: {alert['ticker']}", "Tags": "chart_with_upwards_trend"})
-            else:  # generic webhook; "content" for Discord, "text" for Slack
-                await c.post(url, json={"text": alert["message"], "content": alert["message"], **alert})
-    except httpx.HTTPError as e:
-        log.warning("alert webhook failed: %s", e)
+    await push(f"Signal Desk: {alert['ticker']}", alert["message"], extra=alert)
 
 
 async def run_cycle() -> list[dict]:

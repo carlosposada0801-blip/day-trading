@@ -6,21 +6,32 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import alerts, auth, backtest, data, engine, signals, store
 from app.config import TRACKED_FUNDS, settings
 from app.paper import PaperAccount, TradeError
+from app.trading import calendar as market
+from app.trading import journal, simulate
+from app.trading import strategy as strategy_cfg
+from app.trading.robinhood import CALLBACK_PATH
+from app.trading.robinhood import login as rh_login
+from app.trading.trader import Trader
+from app.trading.trader import state as trader_state
 
 
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
-    task = asyncio.create_task(alerts.loop()) if settings.alerts_enabled else None
+    tasks = []
+    if settings.alerts_enabled:
+        tasks.append(asyncio.create_task(alerts.loop()))
+    if settings.trader_enabled:
+        tasks.append(asyncio.create_task(trader.loop()))
     yield
-    if task:
-        task.cancel()
+    for t in tasks:
+        t.cancel()
 
 
 app = FastAPI(title="Signal Desk", version="0.2.0", lifespan=lifespan)
@@ -28,6 +39,7 @@ app.middleware("http")(auth.middleware)
 STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 account = PaperAccount()
+trader = Trader(account)
 
 _TICKER = re.compile(r"^[A-Z][A-Z.\-]{0,9}$")
 
@@ -198,3 +210,134 @@ async def paper_order(o: OrderIn):
 async def paper_reset():
     account.reset()
     return {"ok": True}
+
+
+# ---- autotrader --------------------------------------------------------------------------
+
+_connect_task: asyncio.Task | None = None
+_connect_result: dict = {}
+
+
+@app.get("/api/trading")
+async def trading_status():
+    cfg = strategy_cfg.load()
+    st = trader_state()
+    rh = trader._robinhood
+    return {
+        **st,
+        "market_open": market.is_open(),
+        "allow_live_auto": settings.allow_live_auto,
+        "proposals": journal.proposals("pending"),
+        "decisions": journal.decisions(40),
+        "robinhood": {
+            "connected": bool(rh and rh.tools),
+            "tools": sorted(rh.tools) if rh else [],
+            "login_url": rh_login.url,
+            "connecting": bool(_connect_task and not _connect_task.done()),
+            "last_connect": _connect_result,
+        },
+        "rules": {"entry": vars(cfg.entry), "exit": vars(cfg.exit), "sizing": vars(cfg.sizing),
+                  "risk": vars(cfg.risk), "schedule": vars(cfg.schedule)},
+    }
+
+
+class ModeIn(BaseModel):
+    mode: Literal["off", "approve", "auto"]
+    broker: Literal["sim", "robinhood"]
+
+
+@app.post("/api/trading/mode")
+async def trading_mode(m: ModeIn):
+    try:
+        trader.set_mode(m.mode, m.broker)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return trader_state()
+
+
+@app.post("/api/trading/kill")
+async def trading_kill():
+    return {"message": await trader.kill(), **trader_state()}
+
+
+@app.post("/api/trading/resume")
+async def trading_resume():
+    trader.reset_kill()
+    return trader_state()
+
+
+@app.post("/api/trading/run")
+async def trading_run():
+    """Run one cycle now. In demo mode it ignores market hours so you can try it any time."""
+    return await trader.cycle(force_open=settings.demo_mode)
+
+
+@app.post("/api/trading/proposals/{proposal_id}/approve")
+async def proposal_approve(proposal_id: int):
+    try:
+        return await trader.approve(proposal_id, force_open=settings.demo_mode)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/trading/proposals/{proposal_id}/reject")
+async def proposal_reject(proposal_id: int):
+    try:
+        trader.reject(proposal_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True}
+
+
+@app.get("/api/trading/journal.csv")
+async def journal_csv():
+    return PlainTextResponse(journal.csv_export(), media_type="text/csv",
+                             headers={"Content-Disposition": "attachment; filename=trade-journal.csv"})
+
+
+@app.get("/api/trading/backtest")
+async def trading_backtest(source: Literal["momentum", "recorded"] = "momentum", cost_bps: float = 10):
+    cfg = strategy_cfg.load()
+    hist = await asyncio.gather(*(data.get_history(t) for t in settings.watchlist), data.get_history("SPY"))
+    prices = {p.ticker: p for p in hist[:-1] if p}
+    if source == "momentum":
+        scores = {t: simulate.momentum_scores(p) for t, p in prices.items()}
+    else:
+        scores = simulate.recorded_scores(store.history())
+    r = simulate.run(scores, prices, cfg, benchmark=hist[-1], cost_bps=cost_bps)
+    return {**r, "source": source, "demo": settings.demo_mode}
+
+
+async def _do_connect():
+    global _connect_result
+    try:
+        tools = await trader.broker("robinhood").connect()
+        _connect_result = {"ok": True, "tools": tools}
+    except Exception as e:  # noqa: BLE001 - surface any login/connection failure in the dashboard
+        _connect_result = {"ok": False, "error": f"{type(e).__name__}: {e}"[:400]}
+
+
+@app.post("/api/broker/robinhood/connect")
+async def robinhood_connect():
+    global _connect_task
+    if not (_connect_task and not _connect_task.done()):
+        _connect_task = asyncio.create_task(_do_connect())
+    await asyncio.sleep(1.5)  # give the OAuth flow a moment to produce the login URL
+    return {"login_url": rh_login.url, "result": _connect_result}
+
+
+@app.post("/api/broker/robinhood/disconnect")
+async def robinhood_disconnect():
+    if trader._robinhood:
+        trader._robinhood.disconnect()
+    if journal.get("broker") == "robinhood":
+        trader.set_mode("off", "sim")
+    return {"ok": True}
+
+
+@app.get(CALLBACK_PATH)
+async def robinhood_callback(request: Request):
+    if not rh_login.complete(request.url.query):
+        raise HTTPException(400, "no Robinhood login in progress")
+    return HTMLResponse("<p style='font-family:system-ui'>Robinhood connected. You can close this tab "
+                        "and return to <a href='/'>Signal Desk</a>.</p>")

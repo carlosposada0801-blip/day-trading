@@ -1,0 +1,11 @@
+# docker compose up -d   (reads your .env; data and Robinhood login persist in ./data)
+services:
+  signal-desk:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data
+      - ./strategy.toml:/app/strategy.toml:ro
+    ports:
+      - "127.0.0.1:8000:8000"   # reachable only from this machine (use SSH or Tailscale to get in)

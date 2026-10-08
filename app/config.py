@@ -35,6 +35,12 @@ class Settings:
     ])
     cache_ttl: int = int(os.getenv("CACHE_TTL", "300"))
     db_path: str = os.getenv("DB_PATH", "paper_trading.db")
+    data_dir: str = os.getenv("DATA_DIR", ".")  # where broker login tokens are kept
+    # Where your browser reaches this app; Robinhood's login redirects back here.
+    public_url: str = os.getenv("PUBLIC_URL", f"http://127.0.0.1:{os.getenv('PORT', '8000')}")
+    strategy_path: str = os.getenv("STRATEGY_PATH", "strategy.toml")
+    # Required before the autotrader may place orders on Robinhood without your approval.
+    allow_live_auto: bool = os.getenv("ALLOW_LIVE_AUTO", "0") == "1"
     starting_cash: float = float(os.getenv("STARTING_CASH", "100000"))
     # Paper-trading guardrail: no single position may exceed this share of equity.
     max_position_pct: float = float(os.getenv("MAX_POSITION_PCT", "0.20"))
@@ -42,6 +48,8 @@ class Settings:
     fmp_api_key: str = os.getenv("FMP_API_KEY", "")
     # Alerts: re-score the watchlist every N minutes and flag big moves.
     alerts_enabled: bool = os.getenv("ALERTS_ENABLED", "1") == "1"
+    # Run the autotrader loop in the background (it still does nothing until you pick a mode).
+    trader_enabled: bool = os.getenv("TRADER_ENABLED", "1") == "1"
     alert_interval_min: int = int(os.getenv("ALERT_INTERVAL_MIN", "15"))
     alert_delta: float = float(os.getenv("ALERT_DELTA", "25"))  # score points within the lookback
     alert_lookback_hours: float = float(os.getenv("ALERT_LOOKBACK_HOURS", "24"))

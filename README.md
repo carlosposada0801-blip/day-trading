@@ -1,11 +1,11 @@
 # Signal Desk
 
-A private day-trading research dashboard. It blends **news**, **social media**, **corporate
+A private trading research dashboard and autotrader. It blends **news**, **social media**, **corporate
 insiders**, **big funds**, **members of Congress** and **price momentum** into one score per
 ticker, alerts you when scores move, measures whether the score actually predicts anything,
-and has a **paper-trading** account for testing ideas without real money.
+and can trade on its own (practice account or Robinhood) under strict rules you set.
 
-> Research tool, not financial advice. No real orders are placed.
+> Not financial advice. Automated trading can lose money quickly; start in practice mode.
 
 ## Run it (just for you)
 
@@ -84,6 +84,96 @@ markets anything consistently above ~0.05 is good, and around 0 means no edge. *
 rate** is how often bullish/bearish calls got the direction right; 50% is a coin flip.
 **Long − short** is the average return after bullish calls minus after bearish ones.
 Trading costs and slippage are ignored, so real results would be worse.
+
+## Autotrader
+
+The Autotrader panel turns signals into trades under rules you control in `strategy.toml`.
+
+**Modes**
+- **Off**: nothing happens (default).
+- **Ask me first**: during market hours it proposes trades and pings your phone. You approve
+  or reject each one in the dashboard. Proposals expire after 15 minutes, and risk checks
+  run again with a fresh price when you approve.
+- **Automatic**: places orders itself. On Robinhood this also needs `ALLOW_LIVE_AUTO=1` in
+  `.env`, so it can't be switched on by accident.
+
+**Brokers**
+- **Practice account**: simulated fills against your paper portfolio. Start here.
+- **Robinhood**: uses Robinhood's official Agentic Trading MCP server (see below).
+
+**What it does each cycle** (every 5 minutes while the market is open): check sell rules
+on everything you hold (stop-loss, take-profit, score drop, max hold time, optional
+end-of-day close), then look for new buys, then run every risk check, then act according
+to the mode. Every decision, including blocked ones and the reasons, goes into the
+decision journal, which you can download as CSV for taxes and review.
+
+**Safety limits**, all in `strategy.toml`:
+- **STOP ALL TRADING** button: turns the autotrader off, cancels pending approvals and
+  open orders where possible, and pushes an alert. It stays stopped until you click Resume
+  and pick a mode again.
+- **Daily loss limit**: if equity falls 3% from the day's open, no new buys until tomorrow.
+  Sells still run.
+- **Caps**: trades per day, dollars per order, % of account per position, number of
+  positions, buying power.
+- **Bad data**: no new buys when more than one data source is failing.
+- **Timing**: no trades in the first or last 15 minutes of the session; market holidays
+  and early closes are respected (calendar in `app/trading/calendar.py` covers 2026–2027;
+  the app refuses to trade in a year it doesn't know).
+- **Order type**: limit orders only, never market orders (last price ±0.5%).
+- **Day trades**: at most 3 in 5 business days by default. The SEC approved removing the
+  pattern-day-trader rule in April 2026, but brokers have until October 2027 to switch.
+  Confirm Robinhood's current policy before setting `max_day_trades_per_5d = -1`.
+- **Wash sales**: won't rebuy a stock within 30 days of selling it at a loss.
+- If a stop-loss sell is blocked (e.g. by the day-trade cap), you get an urgent push so you
+  can decide yourself.
+
+**Rules backtest** (bottom of the panel) replays your current rules over a year of prices
+using the momentum score, or over the full scores the app has recorded, with trading costs,
+and compares the result to just holding SPY. If your rules don't beat SPY, don't automate
+them.
+
+### Connecting Robinhood
+
+Robinhood doesn't offer a general stock-trading API, and unofficial reverse-engineered
+libraries aren't supported and can conflict with its terms. What it does offer (since May 2026) is **Agentic Trading**: an official
+MCP server at `https://agent.robinhood.com/mcp/trading`, with these properties:
+- You sign in on robinhood.com in your browser (OAuth); this app never sees your password.
+- Agents can read your accounts but can **only place orders in a separate Agentic account**
+  you fund for this purpose. Equities only during the beta.
+- Robinhood has its own controls (trade approvals in Agent Settings, per-trade notifications,
+  and a disconnect switch in the app). The disconnect switch is your kill switch from your
+  phone.
+
+Steps:
+1. In the Robinhood app on desktop, open an **Agentic account** and fund it with an amount
+   you're fully prepared to lose. That balance is your real risk limit.
+2. In Signal Desk pick **Robinhood**, click **Connect Robinhood**, sign in on the page that
+   opens, and approve. The token is saved in `DATA_DIR/robinhood_tokens.json` (owner-only
+   permissions, git-ignored).
+3. Run **Ask me first** for a few weeks before considering Automatic.
+
+The adapter discovers Robinhood's tools when it connects and maps order fields onto their
+input schemas. It **refuses to trade** if a required field can't be filled. Every order goes
+through Robinhood's `review_equity_order` first and is blocked if the review returns
+warnings or errors. If Robinhood names tools differently or needs an account number, set
+them under `[robinhood]` in `strategy.toml`. This adapter was built from public
+descriptions of the MCP server and tested against a simulated server; it has not yet been
+run against Robinhood itself. Check the first connection and your first approved order
+carefully.
+
+## Running it all the time
+
+Trades and alerts only happen while the app is running. Exit rules are checked by the app,
+not held at Robinhood, so **if the app is down, stop-losses don't fire**. Run it on an
+always-on machine:
+
+- **Docker** (any small cloud server or home machine): `docker compose up -d`. Data and the
+  Robinhood login live in `./data`. The port is bound to 127.0.0.1 only.
+- **systemd**: see `deploy/signal-desk.service`.
+- **Reaching it remotely**: use Tailscale, or an SSH tunnel
+  (`ssh -L 8000:127.0.0.1:8000 you@server`, then open http://127.0.0.1:8000). The tunnel
+  also makes the Robinhood login redirect work on a headless server. Don't open the port to
+  the internet.
 
 ## Configuration
 

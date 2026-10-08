@@ -68,3 +68,27 @@ def test_paper_order_flow():
     assert r.status_code == 400 and "no shorting" in r.json()["detail"]
     p = client.get("/api/paper").json()
     assert p["positions"][0]["ticker"] == "AAPL" and len(p["trades"]) == 1
+
+
+def test_trading_endpoints():
+    s = client.get("/api/trading").json()
+    assert {"mode", "broker", "proposals", "decisions", "robinhood", "rules"} <= set(s)
+    assert client.post("/api/trading/mode", json={"mode": "approve", "broker": "sim"}).json()["mode"] == "approve"
+    r = client.post("/api/trading/mode", json={"mode": "auto", "broker": "robinhood"})
+    assert r.status_code == 400 and "ALLOW_LIVE_AUTO" in r.json()["detail"]
+    run = client.post("/api/trading/run").json()  # demo mode ignores market hours
+    assert "actions" in run
+    pending = client.get("/api/trading").json()["proposals"]
+    if pending:
+        assert client.post(f"/api/trading/proposals/{pending[0]['proposal_id']}/reject").status_code == 200
+    assert client.post("/api/trading/kill").json()["kill_switch"] is True
+    assert client.post("/api/trading/resume").json()["kill_switch"] is False
+    csv = client.get("/api/trading/journal.csv")
+    assert csv.status_code == 200 and csv.text.startswith("id,ts,")
+    bt = client.get("/api/trading/backtest?source=momentum").json()
+    assert bt["days"] > 100 and "benchmark_return_pct" in bt
+
+
+def test_robinhood_callback_is_public_but_inert():
+    anon = TestClient(app)
+    assert anon.get("/broker/robinhood/callback?code=x&state=y").status_code == 400
