@@ -153,8 +153,8 @@ kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px 6p
 /* ---- autopilot ---- */
 .ap-toggle { margin-left: auto; font-weight: 600; padding: 7px 16px; }
 .ap-toggle.stop { background: var(--down); }
-#ap-state.on { background: var(--up); }
-#ap-state.off { background: var(--flat); }
+.pill.on { background: var(--up); }
+.pill.off { background: var(--flat); }
 .ap-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 14px; }
 .ap-kpis .v { font-size: 22px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .ap-kpis .sub { font-size: 12px; color: var(--muted); }
@@ -177,3 +177,10 @@ kbd { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; padding: 1px 6p
 .checks .ok { color: var(--up); } .checks .bad { color: var(--down); } .checks .warn { color: var(--muted); }
 .checks .fix { display: block; font-size: 12px; color: var(--muted); }
 #ap-amount { width: 110px; padding: 5px 7px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; }
+
+/* ---- penny stocks ---- */
+.penny-warn { margin: 0 0 10px; }
+#penny td:last-child { white-space: normal; text-align: left; min-width: 220px; }
+#penny th:last-child { text-align: left; }
+.flag-pump { color: var(--down); font-weight: 600; }
+.eligible { color: var(--up); font-weight: 600; }

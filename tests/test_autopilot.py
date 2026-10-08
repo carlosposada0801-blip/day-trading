@@ -14,7 +14,7 @@ NOW = MIDDAY.isoformat()
 
 @pytest.fixture(autouse=True)
 def clean():
-    for k in ("net_deposits", "reserved", "set_aside_total", "last_cash", "last_ts", "last_equity"):
+    for k in ("net_deposits", "reserved", "set_aside_total", "last_cash", "last_ts", "last_equity", "last_deposit_ts"):
         for b in ("t", "sim"):
             journal.put(f"ap:{b}:{k}", None)
     journal.put("ap:summary_week", None)
@@ -56,13 +56,16 @@ def test_profit_pull_high_water():
 
 def test_core_order():
     cfg = strategy.Strategy()  # 60% core, band 5%, $5k steps
+    cfg.sizing.fractional = False
     assert autopilot.core_order(cfg, 10_000, 0, 9_000, 0, 500) == ("buy", 10, "invest in VOO: core 0% of target 60%")
     assert autopilot.core_order(cfg, 10_000, 0, 9_000, 12, 500) is None  # 60% exactly
     assert autopilot.core_order(cfg, 10_000, 0, 9_000, 11, 500) is None  # 55%: inside the band
     side, qty, _ = autopilot.core_order(cfg, 10_000, 0, 9_000, 20, 500)  # 100%: trim
     assert (side, qty) == ("sell", 8)
     assert autopilot.core_order(cfg, 100_000, 0, 90_000, 0, 500)[1] == 10  # capped at $5,000 per step
-    assert autopilot.core_order(cfg, 10_000, 0, 200, 0, 500) is None  # not enough spendable cash
+    assert autopilot.core_order(cfg, 10_000, 0, 200, 0, 500) is None  # whole shares: $200 can't buy one
+    cfg.sizing.fractional = True
+    assert autopilot.core_order(cfg, 10_000, 0, 200, 0, 500)[:2] == ("buy", 0.4)  # fractions can
     cfg.autopilot.core_pct = 0
     assert autopilot.core_order(cfg, 10_000, 0, 9_000, 0, 500) is None
 
@@ -89,6 +92,7 @@ def trader(tmp_path, monkeypatch):
     journal.put("kill_switch", False)
     journal.put("halted_on", None)
     journal._db().execute("DELETE FROM decisions")
+    journal._db().execute("DELETE FROM trade_state WHERE key LIKE 'pnl_open:%'")
     journal._db().execute("DELETE FROM proposals")
     t = Trader(PaperAccount(":memory:", starting_cash=20_000))
     t.set_mode("auto", "sim")
@@ -132,3 +136,24 @@ def test_autopilot_raises_cash_for_profit(trader, monkeypatch):
     # set-aside cash is never reinvested on later cycles
     asyncio.run(trader.cycle(MIDDAY))
     assert trader.ledger.summary({})["cash"] >= reserved - 1
+
+
+def test_small_paycheck_account():
+    """$100 deposits: fractional VOO, nothing under the $5 minimum, no dust rebalancing."""
+    cfg = strategy.Strategy()
+    side, qty, _ = autopilot.core_order(cfg, 100, 0, 95, 0, 525)
+    assert side == "buy" and 0.11 < qty < 0.12  # $60 of a $525 fund
+    assert autopilot.core_order(cfg, 100, 0, 95, 0.105, 525) is None  # $55.13 held vs $60 target: within $5 band
+    cfg.autopilot.rebalance_band_pct = 0
+    assert autopilot.core_order(cfg, 100, 0, 95, 0.108, 525) is None  # $3 gap: under the $5 minimum order
+
+
+def test_deposit_schedule_reminder():
+    from datetime import timedelta
+    cfg = strategy.Strategy()
+    cfg.autopilot.expected_deposit_usd = 100
+    autopilot.update_funding("t", 100, 100, [], NOW)  # first run counts as a deposit
+    assert autopilot.deposit_overdue(cfg, "t", MIDDAY + timedelta(days=15)) is None  # within grace
+    assert autopilot.deposit_overdue(cfg, "t", MIDDAY + timedelta(days=20)) == pytest.approx(6)
+    cfg.autopilot.expected_deposit_usd = 0
+    assert autopilot.deposit_overdue(cfg, "t", MIDDAY + timedelta(days=60)) is None

@@ -55,7 +55,9 @@ def test_entry_and_exit_rules(cfg):
     assert strategy.exit_reason(cfg, 100, 101, -5, 1).startswith("score fell")
     assert strategy.exit_reason(cfg, 100, 101, 50, 25).startswith("held")
     assert strategy.exit_reason(cfg, 100, 101, 50, 1) is None
-    assert strategy.position_qty(cfg, 100_000, 300) == 6  # capped by max_order_usd $2,000
+    assert strategy.position_qty(cfg, 100_000, 300) == 6.6666  # capped by max_order_usd $2,000, fractional
+    cfg.sizing.fractional = False
+    assert strategy.position_qty(cfg, 100_000, 300) == 6
 
 
 def test_risk_checks(cfg):
@@ -105,6 +107,9 @@ def loose(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "strategy_path", str(p))
     for k in ("mode", "broker", "kill_switch", "halted_on"):
         journal.put(k, None)
+    for k in ("net_deposits", "reserved", "set_aside_total", "last_cash", "last_ts", "last_equity", "last_deposit_ts"):
+        journal.put(f"ap:sim:{k}", None)
+    journal._db().execute("DELETE FROM trade_state WHERE key LIKE 'pnl_open:%'")
     journal._db().execute("DELETE FROM decisions")  # trades from other tests would count toward today's limits
     journal._db().execute("DELETE FROM proposals")
     journal.put("kill_switch", False)
@@ -157,10 +162,19 @@ def test_live_auto_needs_explicit_opt_in(loose, monkeypatch):
 def test_daily_loss_halts_buys(loose):
     loose.set_mode("auto", "sim")
     today = MIDDAY.astimezone(calendar.ET).date().isoformat()
-    journal.put(f"equity_open:sim:{today}", 200_000)  # pretend we started the day at 200k
+    journal.put(f"pnl_open:sim:{today}", {"pnl": 100_000, "equity": 200_000})  # we were up $100k at the open
     out = asyncio.run(loose.cycle(MIDDAY))
     assert all(a["status"] == "blocked" for a in out["actions"])
     assert journal.get("halted_on") == today
+    journal.put("halted_on", None)
+
+
+def test_withdrawal_is_not_a_daily_loss(loose):
+    loose.set_mode("auto", "sim")
+    asyncio.run(loose.cycle(MIDDAY))  # records today's opening profit
+    loose.ledger.transfer(-(loose.ledger.summary({})["cash"] * 0.9))  # pull out most of the cash
+    asyncio.run(loose.cycle(MIDDAY))
+    assert journal.get("halted_on") is None
 
 
 def test_simulate_rules_vs_benchmark(cfg):

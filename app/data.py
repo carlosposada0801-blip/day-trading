@@ -54,7 +54,7 @@ async def get_social(ticker: str) -> list[SocialPost]:
 async def get_trending() -> list[dict]:
     """Most-mentioned tickers across tracked subreddits (cashtags + watchlist names)."""
     if settings.demo_mode:
-        posts = [p for t in settings.watchlist for p in demo.social(t)]
+        posts = [p for t in [*settings.watchlist, *demo.DEMO_PENNIES] for p in demo.social(t)]
     else:
         posts = await _safe("reddit", "reddit", settings.cache_ttl,
                             lambda: social.fetch_reddit(set(settings.watchlist)), [])

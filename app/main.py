@@ -14,7 +14,7 @@ from app import alerts, auth, backtest, data, engine, signals, store
 from app.config import TRACKED_FUNDS, settings
 from app.paper import PaperAccount, TradeError
 from app.trading import calendar as market
-from app.trading import autopilot, journal, simulate
+from app.trading import autopilot, journal, penny, simulate
 from app.trading import strategy as strategy_cfg
 from app.trading.robinhood import CALLBACK_PATH
 from app.trading.robinhood import login as rh_login
@@ -398,6 +398,9 @@ async def _preflight(broker_name: str) -> tuple[list[dict], dict | None]:
             f"Consider a bigger core_pct in strategy.toml.")
     except Exception as e:  # noqa: BLE001
         add(False, "warn", "Backtest ran", f"{e}"[:200])
+    if cfg.penny.enabled:
+        add(False, "warn", f"Penny stocks on ({cfg.penny.budget_pct:.0f}% of money)",
+            "High risk: big swings, thin trading, pump-and-dumps. Guardrails apply but losses can be fast.")
     add(False, "warn", "App runs on an always-on machine",
         "Exits and deposits are only handled while the app runs. See README: Running it all the time.")
     return items, acct
@@ -415,10 +418,12 @@ async def autopilot_status():
             positions = await trader.broker(st["broker"]).positions()
             prices = await _prices_for([p.ticker for p in positions])
             core = cfg.autopilot.core_symbol.upper()
+            pennies = penny.held()
             core_v = sum(p.qty * prices.get(p.ticker, p.avg_cost) for p in positions if p.ticker == core)
             sat_v = sum(p.qty * prices.get(p.ticker, p.avg_cost) for p in positions if p.ticker != core)
+            pen_v = sum(p.qty * prices.get(p.ticker, p.avg_cost) for p in positions if p.ticker in pennies)
             reserved = f.reserved if f else 0.0
-            alloc = {"core": round(core_v, 2), "satellites": round(sat_v, 2),
+            alloc = {"core": round(core_v, 2), "satellites": round(sat_v, 2), "penny": round(pen_v, 2),
                      "set_aside": round(min(reserved, acct["cash"]), 2),
                      "cash": round(max(0.0, acct["cash"] - reserved), 2)}
         except Exception:  # noqa: BLE001 - status still useful without the breakdown
@@ -433,6 +438,10 @@ async def autopilot_status():
         "set_aside_total": f.set_aside_total if f else 0.0,
         "allocation": alloc,
         "plan": vars(cfg.autopilot),
+        "penny_plan": {"enabled": cfg.penny.enabled, "budget_pct": cfg.penny.budget_pct},
+        "fractional": cfg.sizing.fractional,
+        "last_deposit": journal.get(f"ap:{st['broker']}:last_deposit_ts"),
+        "deposit_overdue_days": autopilot.deposit_overdue(cfg, st["broker"], journal.now()),
         "checks": items,
         "ready": all(i["ok"] for i in items if i["level"] == "block"),
     }
@@ -475,3 +484,12 @@ async def paper_transfer(t: TransferIn):
         return {"cash": account.transfer(t.amount)}
     except TradeError as e:
         raise HTTPException(400, str(e))
+
+
+@app.get("/api/penny")
+async def penny_scan():
+    cfg = strategy_cfg.load()
+    rows = await penny.scan(cfg) if cfg.penny.enabled else []
+    return {"enabled": cfg.penny.enabled, "rules": vars(cfg.penny), "held": sorted(penny.held()),
+            "candidates": [{**{k: v for k, v in r.items() if k != "signal"},
+                            "score": r["signal"].score, "confidence": r["signal"].confidence} for r in rows]}

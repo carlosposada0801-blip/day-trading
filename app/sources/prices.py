@@ -8,14 +8,18 @@ from app.sources.http import client
 def parse_chart(data: dict, ticker: str) -> PriceInfo:
     res = data["chart"]["result"][0]
     meta = res["meta"]
-    raw = res["indicators"]["quote"][0]["close"]
+    quote = res["indicators"]["quote"][0]
+    raw = quote["close"]
+    vols = quote.get("volume") or [None] * len(raw)
     stamps = res.get("timestamp") or [None] * len(raw)
-    pairs = [(t, c) for t, c in zip(stamps, raw) if c is not None]
-    closes = [c for _, c in pairs]
-    dates = [datetime.fromtimestamp(t, tz=timezone.utc).date().isoformat() if t else "" for t, _ in pairs]
+    rows = [(t, c, v) for t, c, v in zip(stamps, raw, vols) if c is not None]
+    closes = [c for _, c, _ in rows]
+    volumes = [float(v or 0) for _, _, v in rows] if quote.get("volume") else []
+    dates = [datetime.fromtimestamp(t, tz=timezone.utc).date().isoformat() if t else "" for t, _, _ in rows]
     price = meta.get("regularMarketPrice") or closes[-1]
     prev = meta.get("chartPreviousClose") if len(closes) < 2 else closes[-2]
-    return PriceInfo(ticker=ticker, price=price, prev_close=prev or price, closes=closes, dates=dates)
+    return PriceInfo(ticker=ticker, price=price, prev_close=prev or price, closes=closes, dates=dates,
+                     volumes=volumes, exchange=meta.get("exchangeName") or meta.get("fullExchangeName") or "")
 
 
 async def fetch(ticker: str, range_: str = "1mo") -> PriceInfo:

@@ -14,7 +14,7 @@ import math
 from dataclasses import dataclass
 
 from app.trading import calendar, journal
-from app.trading.strategy import Strategy
+from app.trading.strategy import Strategy, shares_for
 
 
 @dataclass
@@ -63,6 +63,7 @@ def update_funding(broker: str, equity: float, cash: float, orders_since_last: l
     if f is None:  # first run: whatever is in the account counts as deposited
         f = Funds(known_net_deposits if known_net_deposits is not None else equity, 0.0, 0.0, [("start", equity)])
         _save(broker, f, cash, now_iso)
+        journal.put(_key(broker, "last_deposit_ts"), now_iso)
         return f
     if known_net_deposits is not None:
         diff, tolerance = known_net_deposits - f.net_deposits, 0.005
@@ -79,6 +80,7 @@ def update_funding(broker: str, equity: float, cash: float, orders_since_last: l
     if diff > tolerance:
         f.net_deposits += diff
         f.events.append(("deposit", diff))
+        journal.put(_key(broker, "last_deposit_ts"), now_iso)
     elif diff < -tolerance:
         f.net_deposits += diff
         f.reserved = max(0.0, f.reserved + diff)
@@ -135,17 +137,42 @@ def core_order(cfg: Strategy, equity: float, reserved: float, spend: float, held
     if abs(gap) <= equity * a.rebalance_band_pct / 100:
         return None
     if gap > 0:
-        qty = math.floor(min(gap, a.core_max_order_usd, spend) / price)
+        qty = shares_for(cfg, min(gap, a.core_max_order_usd, spend), price)
         why = f"core {current / investable:.0%} of target {a.core_pct:.0f}%" if investable else "core"
-        return ("buy", qty, f"invest in {a.core_symbol}: {why}") if qty > 0 else None
-    qty = min(int(held_qty), math.floor(min(-gap, a.core_max_order_usd) / price))
-    return ("sell", qty, f"rebalance {a.core_symbol}: above {a.core_pct:.0f}% target") if qty > 0 else None
+        ok = qty > 0 and qty * price >= cfg.sizing.min_order_usd
+        return ("buy", qty, f"invest in {a.core_symbol}: {why}") if ok else None
+    qty = min(held_qty, shares_for(cfg, min(-gap, a.core_max_order_usd), price))
+    if not cfg.sizing.fractional:
+        qty = math.floor(qty)
+    ok = qty > 0 and qty * price >= cfg.sizing.min_order_usd
+    return ("sell", qty, f"rebalance {a.core_symbol}: above {a.core_pct:.0f}% target") if ok else None
+
+
+def penny_pct(cfg: Strategy) -> float:
+    return cfg.penny.budget_pct if cfg.penny.enabled else 0.0
 
 
 def satellite_room(cfg: Strategy, equity: float, reserved: float, satellite_value: float) -> float:
     a = cfg.autopilot
-    cap = max(0.0, equity - reserved) * max(0.0, 100 - a.core_pct - a.cash_reserve_pct) / 100
+    share = max(0.0, 100 - a.core_pct - a.cash_reserve_pct - penny_pct(cfg))
+    cap = max(0.0, equity - reserved) * share / 100
     return max(0.0, cap - satellite_value)
+
+
+def penny_room(cfg: Strategy, equity: float, reserved: float, penny_value: float) -> float:
+    cap = max(0.0, equity - reserved) * penny_pct(cfg) / 100
+    return max(0.0, cap - penny_value)
+
+
+def deposit_overdue(cfg: Strategy, broker: str, now) -> float | None:
+    """Days a scheduled deposit is late (with 3 days' grace), or None if on time / no schedule."""
+    a = cfg.autopilot
+    last = journal.get(_key(broker, "last_deposit_ts"))
+    if a.expected_deposit_usd <= 0 or not last:
+        return None
+    from datetime import datetime
+    late = (now - datetime.fromisoformat(last)).total_seconds() / 86400 - a.deposit_every_days
+    return late if late > 3 else None
 
 
 def cash_shortfall(cfg: Strategy, equity: float, cash: float, reserved: float) -> float:

@@ -46,10 +46,21 @@ class PriceInfo(BaseModel):
     prev_close: float
     closes: list[float]  # recent daily closes, oldest first
     dates: list[str] = []  # ISO dates matching closes
+    volumes: list[float] = []  # daily share volume matching closes (empty if unknown)
+    exchange: str = ""  # e.g. "NasdaqCM", "NYSE", "PNK" (pink sheets / OTC)
 
     @property
     def change_pct(self) -> float:
         return (self.price / self.prev_close - 1) * 100 if self.prev_close else 0.0
+
+    def avg_dollar_volume(self, days: int = 20) -> float | None:
+        pairs = list(zip(self.closes, self.volumes))[-days:]
+        return sum(c * v for c, v in pairs) / len(pairs) if pairs else None
+
+    @property
+    def is_otc(self) -> bool:
+        e = self.exchange.upper()
+        return e in {"PNK", "OQB", "OQX", "OBB", "OTC", "OEM", "OGM"} or "OTC" in e or "PINK" in e
 
 
 class Signal(BaseModel):

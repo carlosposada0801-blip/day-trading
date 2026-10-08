@@ -9,6 +9,7 @@ const ago = (iso) => {
   return m < 60 ? `${m}m ago` : m < 1440 ? `${Math.round(m / 60)}h ago` : `${Math.round(m / 1440)}d ago`;
 };
 const safeUrl = (u) => (/^https?:\/\//.test(u) ? u : "#");
+const fmtQty = (q) => (Number.isInteger(Number(q)) ? fmt(q, 0) : Number(q).toLocaleString(undefined, { maximumFractionDigits: 4 }));
 const compactMoney = (n) => (n < 0 ? "-$" : "$") + Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Math.abs(n));
 
 // Per-browser preferences. Storage can be blocked (private mode), so every access is guarded.
@@ -205,7 +206,7 @@ async function loadPaper() {
       <div class="kpi"><div class="meta">Total P&amp;L</div><div class="v ${cls(p.total_pnl)}">${money(p.total_pnl)} (${fmt(p.total_pnl_pct)}%)</div></div>
       <div class="kpi"><div class="meta">Realized</div><div class="v ${cls(p.realized_pnl)}">${money(p.realized_pnl)}</div></div>
     </div>
-    <ul class="feed">${p.positions.map((x) => `<li><b>${esc(x.ticker)}</b> ${fmt(x.qty, 2)} @ $${fmt(x.avg_cost)} → $${fmt(x.last)}
+    <ul class="feed">${p.positions.map((x) => `<li><b>${esc(x.ticker)}</b> ${fmtQty(x.qty)} @ $${fmt(x.avg_cost)} → $${fmt(x.last)}
       <span class="${cls(x.unrealized)}" style="float:right">${money(x.unrealized)}</span></li>`).join("") || `<li class="meta">No open positions. Pick a ticker above to paper trade.</li>`}</ul>`;
 }
 
@@ -263,7 +264,10 @@ async function loadAutopilot() {
   const profitPct = a.profit != null && a.net_deposits ? (a.profit / a.net_deposits) * 100 : null;
   $("#ap-kpis").innerHTML = !acct ? `<p class="meta">Can't reach the account right now. See the checklist.</p>` : `
     <div><div class="meta">You've put in</div><div class="v">${a.net_deposits == null ? "—" : money(a.net_deposits)}</div>
-      <div class="sub">deposits minus withdrawals</div></div>
+      <div class="sub">${a.plan.expected_deposit_usd > 0
+        ? (a.deposit_overdue_days ? `<span class="down">${money(a.plan.expected_deposit_usd)} deposit ${Math.round(a.deposit_overdue_days)} days late</span>`
+          : `${money(a.plan.expected_deposit_usd)} expected ${a.last_deposit ? "around " + new Date(new Date(a.last_deposit).getTime() + a.plan.deposit_every_days * 864e5).toLocaleDateString([], { month: "short", day: "numeric" }) : "every " + a.plan.deposit_every_days + " days"}`)
+        : "deposits minus withdrawals"}</div></div>
     <div><div class="meta">Worth now</div><div class="v">${money(acct.equity)}</div></div>
     <div><div class="meta">Profit</div><div class="v ${cls(a.profit ?? 0)}">${a.profit == null ? "—" : (a.profit >= 0 ? "+" : "") + money(a.profit)}</div>
       <div class="sub">${profitPct == null ? "" : (profitPct >= 0 ? "+" : "") + fmt(profitPct) + "%"}</div></div>
@@ -277,7 +281,8 @@ async function loadAutopilot() {
 
   const al = a.allocation;
   if (al) {
-    const parts = [["core", `Core (${a.plan.core_symbol})`, al.core], ["sat", "Signal trades", al.satellites],
+    const satLabel = al.penny > 0.5 ? `Signal trades (incl. ${money(al.penny)} penny)` : "Signal trades";
+    const parts = [["core", `Core (${a.plan.core_symbol})`, al.core], ["sat", satLabel, al.satellites],
                    ["cash", "Cash", al.cash], ["aside", "Set aside for you", al.set_aside]];
     const total = parts.reduce((s, p) => s + p[2], 0) || 1;
     const shown = parts.filter((p) => p[2] > 0.5);
@@ -289,13 +294,33 @@ async function loadAutopilot() {
   const pl = a.plan;
   $("#ap-plan").innerHTML = `
     ${pl.core_pct > 0 ? `<b>${pl.core_pct}%</b> in ${esc(pl.core_symbol)} (a broad index fund), rebalanced when it drifts ${pl.rebalance_band_pct}%.<br>` : "No core fund: everything follows signals.<br>"}
-    <b>${Math.max(0, 100 - pl.core_pct - pl.cash_reserve_pct)}%</b> traded by the signal rules · <b>${pl.cash_reserve_pct}%</b> kept as cash.<br>
+    <b>${Math.max(0, 100 - pl.core_pct - pl.cash_reserve_pct - (a.penny_plan.enabled ? a.penny_plan.budget_pct : 0))}%</b> traded by the signal rules${a.penny_plan.enabled ? ` · <b>${a.penny_plan.budget_pct}%</b> penny stocks` : ""} · <b>${pl.cash_reserve_pct}%</b> kept as cash.<br>
+    ${a.fractional ? "Buys fractions of a share, so small deposits are fully invested.<br>" : ""}
     New deposits are found automatically and invested in steps of up to ${money(pl.core_max_order_usd).replace(".00", "")}.<br>
     Once you're up <b>${pl.profit_pull_trigger_pct}%</b>, <b>${pl.profit_pull_share_pct}%</b> of the profit is set aside as cash and you're notified to withdraw it.
     ${pl.weekly_summary ? "<br>Weekly summary to your phone after Friday's close." : ""}`;
   $("#ap-checks").innerHTML = a.checks.map((c) => `<li>
       <span class="mark ${c.ok ? "ok" : c.level === "block" ? "bad" : "warn"}">${c.ok ? "✓" : c.level === "block" ? "✕" : "!"}</span>
       <span>${esc(c.text)}${c.fix ? `<span class="fix">${esc(c.fix)}</span>` : ""}</span></li>`).join("");
+}
+
+async function loadPenny() {
+  const p = await api("/api/penny");
+  $("#penny-state").textContent = p.enabled ? "ON" : "OFF";
+  $("#penny-state").className = "pill " + (p.enabled ? "on" : "off");
+  const r = p.rules;
+  $("#penny-rules").textContent = p.enabled
+    ? `$${fmt(r.min_price)}–$${fmt(r.max_price)} · ${r.budget_pct}% budget · max ${r.max_positions} · stop −${r.stop_loss_pct}% · target +${r.take_profit_pct}% · ${r.max_hold_days}-day max hold`
+    : "Turn on with enabled = true under [penny] in strategy.toml";
+  $("#penny tbody").innerHTML = !p.enabled ? `<tr><td colspan="6" class="meta">Penny stocks are off.</td></tr>`
+    : p.candidates.map((c) => `<tr>
+        <td><b>${esc(c.ticker)}</b>${p.held.includes(c.ticker) ? ' <span class="meta">held</span>' : ""}</td>
+        <td>$${fmt(c.price, c.price < 1 ? 4 : 2)}</td>
+        <td>${c.dollar_volume == null ? "—" : compactMoney(c.dollar_volume)}</td>
+        <td>${esc(c.exchange || "—")}</td>
+        <td class="${cls(c.score / 100)}">${fmt(c.score, 0)}</td>
+        <td>${c.eligible ? '<span class="eligible">Can buy</span>' : esc(c.blocks.join(" · ")).replace(/possible pump[^·]*/g, (m) => `<span class="flag-pump">${m}</span>`)}</td></tr>`).join("")
+      || `<tr><td colspan="6" class="meta">No penny candidates right now. Add tickers to watchlist under [penny].</td></tr>`;
 }
 
 const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
@@ -327,7 +352,7 @@ async function loadTrader() {
   });
   $("#rh-disc")?.addEventListener("click", async () => { await post("/api/broker/robinhood/disconnect"); loadTrader(); });
   $("#proposals").innerHTML = t.proposals.map((p) => `
-    <li><b class="${p.side === "buy" ? "up" : "down"}">${p.side.toUpperCase()}</b> ${fmt(p.qty, 0)} <b>${esc(p.ticker)}</b> @ ~$${fmt(p.price)}
+    <li><b class="${p.side === "buy" ? "up" : "down"}">${p.side.toUpperCase()}</b> ${fmtQty(p.qty)} <b>${esc(p.ticker)}</b> @ ~$${fmt(p.price)}
       <div class="meta">${esc(p.reasons.join("; "))} · expires ${ago(p.expires).replace(" ago", "")}</div>
       <div class="prop"><button class="buy" data-ok="${p.proposal_id}">Approve</button><button data-no="${p.proposal_id}">Reject</button></div></li>`).join("")
     || `<li class="meta">${t.mode === "approve" ? "Nothing waiting. Ideas appear here during market hours." : "Switch to “Ask me first” to approve each trade."}</li>`;
@@ -340,7 +365,7 @@ async function loadTrader() {
   }));
   $("#journal tbody").innerHTML = t.decisions.map((d) => `<tr>
     <td>${new Date(d.ts).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</td>
-    <td><b>${esc(d.ticker)}</b></td><td class="${d.side === "buy" ? "up" : "down"}">${d.side}</td><td>${fmt(d.qty, 0)}</td>
+    <td><b>${esc(d.ticker)}</b></td><td class="${d.side === "buy" ? "up" : "down"}">${d.side}</td><td>${fmtQty(d.qty)}</td>
     <td>${d.fill_price ? "$" + fmt(d.fill_price) : d.limit_price ? "lim $" + fmt(d.limit_price) : "$" + fmt(d.price)}</td>
     <td class="st-${esc(d.status)}">${esc(d.status)}</td><td>${esc([...d.reasons, d.detail].filter(Boolean).join(" · "))}</td></tr>`).join("")
     || `<tr><td colspan="7" class="meta">No decisions yet.</td></tr>`;
@@ -401,7 +426,7 @@ async function refresh() {
   btn.disabled = true;
   btn.classList.add("loading");
   try {
-    await Promise.all([loadSignals(), loadSide(), loadPaper(), loadAlerts(), loadTrader(), loadAutopilot()]);
+    await Promise.all([loadSignals(), loadSide(), loadPaper(), loadAlerts(), loadTrader(), loadAutopilot(), loadPenny()]);
     if (selected) await showDetail(selected, false).catch(closeDetail);  // e.g. a remembered ticker that no longer resolves
     lastUpdated = Date.now();
   } catch (e) { fail(e); }

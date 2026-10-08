@@ -40,20 +40,43 @@ def _rng(*parts) -> random.Random:
     return random.Random("|".join(str(p) for p in (*parts, date.today().isoformat())))
 
 
+# Made-up penny tickers that exercise each penny-stock guardrail in demo mode:
+# (price, typical daily shares, exchange, 5-day run-up)
+DEMO_PENNIES = {
+    "PNYA": (1.85, 4_000_000, "NasdaqCM", 0.0),   # liquid, listed: can be bought
+    "PNYB": (3.40, 60_000, "NasdaqCM", 0.0),      # too thinly traded
+    "OTCX": (0.42, 9_000_000, "PNK", 0.0),        # over-the-counter: blocked
+    "PUMP": (2.10, 30_000_000, "NasdaqCM", 0.9),  # +90% in 5 days on hype: pump guard
+}
+
+
 def price(ticker: str, days: int = 22) -> PriceInfo:
     rng = _rng("price", ticker)
-    p = _BASE_PRICES.get(ticker, rng.uniform(20, 300))
+    penny = DEMO_PENNIES.get(ticker)
+    p = penny[0] if penny else _BASE_PRICES.get(ticker, rng.uniform(20, 300))
+    vol = penny[1] if penny else rng.uniform(5e6, 6e7)
+    vol_sd = 0.06 if penny else 0.02
     # Walk backwards from the base price so the latest close stays near it whatever `days` is.
     closes = [p]
-    for _ in range(days - 1):
-        closes.append(closes[-1] / (1 + rng.gauss(0.001, 0.02)))
-    closes = [round(c, 2) for c in reversed(closes)]
+    for k in range(days - 1):
+        step = rng.gauss(0.001, vol_sd)
+        if penny and penny[3] and k < 5:  # recent run-up for the pump example
+            step = (1 + penny[3]) ** (1 / 5) - 1
+        closes.append(closes[-1] / (1 + step))
+    digits = 4 if p < 1 else 2
+    closes = [round(c, digits) for c in reversed(closes)]
+    volumes = [round(vol * rng.uniform(0.6, 1.4)) for _ in closes]
+    if penny and penny[3]:
+        volumes[-5:] = [v * 8 for v in volumes[-5:]]
     today = date.today()
     dates = [(today - timedelta(days=days - 1 - i)).isoformat() for i in range(days)]
-    return PriceInfo(ticker=ticker, price=closes[-1], prev_close=closes[-2], closes=closes, dates=dates)
+    return PriceInfo(ticker=ticker, price=closes[-1], prev_close=closes[-2], closes=closes, dates=dates,
+                     volumes=volumes, exchange=penny[2] if penny else "NasdaqGS")
 
 
 def news(ticker: str) -> list[Article]:
+    if ticker == "PUMP":
+        return []  # pumps run on hype, not news
     rng = _rng("news", ticker)
     now = datetime.now(timezone.utc)
     out = []
@@ -69,6 +92,14 @@ def social(ticker: str) -> list[SocialPost]:
     rng = _rng("social", ticker)
     now = datetime.now(timezone.utc)
     out = []
+    if ticker == "PUMP":
+        for i in range(40):
+            text = rng.choice(["$PUMP to the moon 🚀🚀🚀 next 10 bagger", "$PUMP squeeze incoming, load up 🚀",
+                               "$PUMP breakout, don't miss this 📈"])
+            out.append(SocialPost(ticker=ticker, text=text, url="#", platform="demo", author=f"newacct{i}",
+                                  score=rng.randint(50, 900), created=now - timedelta(minutes=i * 7),
+                                  sentiment=sentiment.score(text)))
+        return out
     for i in range(rng.randint(4, 12)):
         text = rng.choice(_POSTS).format(t=ticker)
         out.append(SocialPost(ticker=ticker, text=text, url="#", platform="demo",

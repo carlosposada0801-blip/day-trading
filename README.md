@@ -149,6 +149,50 @@ Robinhood app; Autopilot does the deciding and tells you when.
 All of the numbers above are settings under `[autopilot]` in `strategy.toml`. Set
 `core_pct = 0` to have everything follow signals, or raise it to be more conservative.
 
+### Small accounts ($100 a paycheck)
+
+The shipped `strategy.toml` is set up for small regular deposits:
+- **Fractional shares** (`fractional = true`): $60 buys 0.11 of a $525 VOO share, so every
+  dollar is invested from the first paycheck. Quantities go down to 1/10,000 of a share.
+- **No dust orders**: nothing smaller than `min_order_usd` ($5) is bought or rebalanced.
+- **Few positions** (`max_positions = 3`, 15% each), since $100 split five ways is pointless.
+- **Paycheck schedule**: `expected_deposit_usd = 100` every `deposit_every_days = 14`. The
+  dashboard shows when the next one is expected, and you get a nudge if it's 3+ days late.
+- Money that the signal or penny rules don't have a use for stays as cash until something
+  qualifies. With a small account that can be a good share of it at first.
+
+Fractional orders through Robinhood's agent connection haven't been verified. If its order
+review rejects fractional limit orders, the app blocks the trade and alerts you. Set
+`fractional = false` to fall back to whole shares, and consider a lower-priced core fund.
+
+## Penny stocks
+
+On in the shipped settings (`[penny] enabled = true`), with 10% of your money. **These are the
+riskiest thing the app can buy**: prices swing 20–50% in days, many trade so thinly you
+can't sell at a fair price, and they're the favourite target of pump-and-dump schemes run on
+the same social media this app reads. In the demo data, the pump example has the highest
+score of any stock on the board; without the guard below, the app would buy it first.
+
+So penny stocks get their own sleeve with stricter rules:
+- **Exchange-listed only**: no OTC / pink-sheet stocks.
+- **$0.50 to $5.00** price range.
+- **Liquidity**: at least $1M traded per day on average over 20 days, so you can get out.
+- **Higher bar**: score 50+ (vs 40 for regular buys).
+- **Pump guard**:
+  - Refuses a stock up 50%+ in 5 days on social hype with no supporting news.
+  - Refuses a volume spike over 5x normal during a 30%+ run-up.
+- **Own budget and count**: 10% of money, at most 2 positions.
+- **Own exits**: −15% stop, +30% target, 10-day max hold. Penny stocks are noisy, so a tight
+  stop would trigger constantly.
+- **Re-checked at approval**: an approved buy is re-checked against these rules with a fresh
+  price.
+- **Regular buys skip them**: stocks under $5 never come in through the regular signal rules
+  while the penny sleeve is on.
+
+Candidates come from your `[penny] watchlist` plus penny tickers trending on Reddit. The
+Penny stocks panel shows each one and exactly why it can or can't be bought. Set
+`enabled = false` to turn the whole sleeve off.
+
 ## Autotrader
 
 The Autotrader panel turns signals into trades under rules you control in `strategy.toml`.

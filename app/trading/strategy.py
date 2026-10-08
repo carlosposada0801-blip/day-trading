@@ -27,6 +27,8 @@ class Exit:
 class Sizing:
     position_pct: float = 10
     max_positions: int = 5
+    fractional: bool = True     # buy fractions of a share (needed for small accounts)
+    min_order_usd: float = 5    # skip buys smaller than this (no pointless dust orders)
 
 
 @dataclass
@@ -60,6 +62,28 @@ class Autopilot:
     profit_pull_share_pct: float = 50    # ...and set aside this share of the profit
     min_pull_usd: float = 50          # ignore smaller amounts
     weekly_summary: bool = True       # push a summary after Friday's close
+    expected_deposit_usd: float = 0   # your regular deposit, e.g. 100 per paycheck (0 = no schedule)
+    deposit_every_days: int = 14      # how often it should arrive
+
+
+@dataclass
+class Penny:
+    """Stocks under max_price, traded in their own small sleeve with stricter rules."""
+    enabled: bool = False
+    budget_pct: float = 15          # % of investable money for penny stocks (taken from the signal share)
+    max_positions: int = 2
+    min_price: float = 0.50         # below this, delisting and manipulation risk is extreme
+    max_price: float = 5.00
+    min_dollar_volume: float = 1_000_000  # avg daily $ traded over 20 days; thin stocks can trap you
+    min_score: float = 50           # stricter than regular buys
+    min_confidence: float = 0.5
+    stop_loss_pct: float = 15
+    take_profit_pct: float = 30
+    max_hold_days: int = 10
+    pump_guard: bool = True         # refuse stocks that look like a social-media pump-and-dump
+    pump_run_up_pct: float = 50     # 5-day rise that, with hype and no news, counts as a pump
+    scan_trending: bool = True      # also consider penny tickers trending on Reddit
+    watchlist: list = field(default_factory=list)  # penny tickers you always want considered
 
 
 @dataclass
@@ -77,6 +101,7 @@ class Strategy:
     risk: Risk = field(default_factory=Risk)
     schedule: Schedule = field(default_factory=Schedule)
     autopilot: Autopilot = field(default_factory=Autopilot)
+    penny: Penny = field(default_factory=Penny)
     robinhood: RobinhoodCfg = field(default_factory=RobinhoodCfg)
 
 
@@ -122,6 +147,15 @@ def exit_reason(cfg: Strategy, avg_cost: float, price: float, score: float | Non
     return None
 
 
-def position_qty(cfg: Strategy, equity: float, price: float) -> int:
+def shares_for(cfg: Strategy, dollars: float, price: float) -> float:
+    """Shares that `dollars` buys: whole shares, or fractions down to 1/10,000 when fractional is on."""
+    if price <= 0 or dollars <= 0:
+        return 0
+    if cfg.sizing.fractional:
+        return math.floor(dollars / price * 10_000) / 10_000
+    return math.floor(dollars / price)
+
+
+def position_qty(cfg: Strategy, equity: float, price: float) -> float:
     budget = min(equity * cfg.sizing.position_pct / 100, cfg.risk.max_order_usd)
-    return max(0, math.floor(budget / price)) if price > 0 else 0
+    return shares_for(cfg, budget, price)

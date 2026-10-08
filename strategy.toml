@@ -15,8 +15,10 @@ max_hold_days = 20        # sell after holding this long
 close_at_eod = false      # true = day-trade style: flatten everything before the close
 
 [sizing]
-position_pct = 10         # size of each new position, % of account equity
-max_positions = 5
+position_pct = 15         # size of each new position, % of account equity
+max_positions = 3         # few positions: a small account split 5+ ways is mostly dust
+fractional = true         # buy fractions of a share, so $100 can own a piece of a $500 fund
+min_order_usd = 5         # never place an order smaller than this
 
 [risk]
 daily_loss_limit_pct = 3  # halt new buys for the day if equity falls this much from the open
@@ -46,8 +48,28 @@ rebalance_band_pct = 5      # rebalance the core only when it drifts this far fr
 core_max_order_usd = 5000   # invest big deposits in steps no larger than this
 profit_pull_trigger_pct = 10   # once you're up this % on what you deposited...
 profit_pull_share_pct = 50     # ...set this share of the profit aside as cash and tell you to withdraw it
-min_pull_usd = 50
+min_pull_usd = 25
 weekly_summary = true       # phone summary after Friday's close
+expected_deposit_usd = 100  # your paycheck deposit; you get a nudge if one is more than 3 days late
+deposit_every_days = 14     # every two weeks (use 7 for weekly, 15 for twice a month)
+
+[penny]
+# Stocks under $5 in their own small, stricter sleeve. High risk: read the README first.
+enabled = true
+budget_pct = 10             # % of your money for penny stocks (taken out of the signal-trading share)
+max_positions = 2
+min_price = 0.50            # under 50 cents, delisting and manipulation risk is extreme
+max_price = 5.00
+min_dollar_volume = 1000000 # must trade $1M+/day on average, so you can actually sell
+min_score = 50              # stricter than regular buys
+min_confidence = 0.5
+stop_loss_pct = 15          # penny stocks swing hard; tighter stops get triggered by noise
+take_profit_pct = 30
+max_hold_days = 10
+pump_guard = true           # refuse big run-ups driven by social hype with no real news
+pump_run_up_pct = 50
+scan_trending = true        # look at penny tickers trending on Reddit
+watchlist = []              # penny tickers you always want checked, e.g. ["ABCD", "WXYZ"]
 
 [robinhood]
 mcp_url = "https://agent.robinhood.com/mcp/trading"
