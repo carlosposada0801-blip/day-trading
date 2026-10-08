@@ -76,10 +76,14 @@ class SimBroker:
             raise BrokerError(f"limit {limit_price:.2f} not marketable at {p.price:.2f}")
         held = [x.ticker for x in await self.positions()]
         try:
-            r = self.ledger.order(ticker, side, qty, p.price, await self._prices(held), note="autotrader")
+            r = self.ledger.order(ticker, side, qty, p.price, await self._prices(held), note="autotrader",
+                                  enforce_limit=False)
         except TradeError as e:
             raise BrokerError(str(e)) from e
         return OrderResult("filled", str(r["id"]), p.price)
 
     async def cancel_all(self) -> str:
         return "simulated orders fill instantly; nothing to cancel"
+
+    def net_deposits(self) -> float:
+        return self.ledger.contributed()

@@ -14,7 +14,7 @@ from app import alerts, auth, backtest, data, engine, signals, store
 from app.config import TRACKED_FUNDS, settings
 from app.paper import PaperAccount, TradeError
 from app.trading import calendar as market
-from app.trading import journal, simulate
+from app.trading import autopilot, journal, simulate
 from app.trading import strategy as strategy_cfg
 from app.trading.robinhood import CALLBACK_PATH
 from app.trading.robinhood import login as rh_login
@@ -359,3 +359,119 @@ async def robinhood_callback(request: Request):
         raise HTTPException(400, "no Robinhood login in progress")
     return HTMLResponse("<p style='font-family:system-ui'>Robinhood connected. You can close this tab "
                         "and return to <a href='/'>Signal Desk</a>.</p>")
+
+
+# ---- autopilot -----------------------------------------------------------------------------
+
+async def _preflight(broker_name: str) -> tuple[list[dict], dict | None]:
+    """Checks before going hands-off. 'block' items must pass; 'warn' items are your call."""
+    items: list[dict] = []
+
+    def add(ok: bool, level: str, text: str, fix: str = ""):
+        items.append({"ok": ok, "level": level, "text": text, "fix": "" if ok else fix})
+
+    acct = None
+    try:
+        a = await trader.broker(broker_name).account()
+        acct = {"equity": a.equity, "cash": a.cash}
+    except Exception as e:  # noqa: BLE001
+        add(False, "block", "Broker reachable", f"{e}"[:200])
+    else:
+        add(True, "block", "Broker reachable")
+        add(a.equity > 0, "block", "Account has money in it", "Deposit into the account first.")
+    live = broker_name == "robinhood"
+    if live:
+        add(settings.allow_live_auto, "block", "Live automatic trading allowed (ALLOW_LIVE_AUTO=1)",
+            "Add ALLOW_LIVE_AUTO=1 to .env and restart, once you're comfortable.")
+    add(bool(settings.alert_webhook_url), "block" if live else "warn", "Phone notifications set up",
+        "Set ALERT_WEBHOOK_URL (ntfy) so you hear about deposits, profits and problems.")
+    add(not journal.get("kill_switch", False), "block", "Kill switch off", "Click Resume in the Autotrader panel.")
+    add(market.calendar_known(), "block", "Market calendar covers this year", "Update app/trading/calendar.py.")
+    cfg = strategy_cfg.load()
+    try:
+        hist = await asyncio.gather(*(data.get_history(t) for t in settings.watchlist), data.get_history("SPY"))
+        prices = {p.ticker: p for p in hist[:-1] if p}
+        r = simulate.run({t: simulate.momentum_scores(p) for t, p in prices.items()}, prices, cfg, benchmark=hist[-1])
+        beats = r.get("beats_benchmark")
+        add(bool(beats), "warn", "Signal rules beat holding SPY in the backtest",
+            f"Strategy {r.get('total_return_pct')}% vs SPY {r.get('benchmark_return_pct')}%. "
+            f"Consider a bigger core_pct in strategy.toml.")
+    except Exception as e:  # noqa: BLE001
+        add(False, "warn", "Backtest ran", f"{e}"[:200])
+    add(False, "warn", "App runs on an always-on machine",
+        "Exits and deposits are only handled while the app runs. See README: Running it all the time.")
+    return items, acct
+
+
+@app.get("/api/autopilot")
+async def autopilot_status():
+    st = trader_state()
+    cfg = strategy_cfg.load()
+    items, acct = await _preflight(st["broker"])
+    f = autopilot.load(st["broker"])
+    alloc = None
+    if acct:
+        try:
+            positions = await trader.broker(st["broker"]).positions()
+            prices = await _prices_for([p.ticker for p in positions])
+            core = cfg.autopilot.core_symbol.upper()
+            core_v = sum(p.qty * prices.get(p.ticker, p.avg_cost) for p in positions if p.ticker == core)
+            sat_v = sum(p.qty * prices.get(p.ticker, p.avg_cost) for p in positions if p.ticker != core)
+            reserved = f.reserved if f else 0.0
+            alloc = {"core": round(core_v, 2), "satellites": round(sat_v, 2),
+                     "set_aside": round(min(reserved, acct["cash"]), 2),
+                     "cash": round(max(0.0, acct["cash"] - reserved), 2)}
+        except Exception:  # noqa: BLE001 - status still useful without the breakdown
+            alloc = None
+    return {
+        "running": st["mode"] == "auto" and not st["kill_switch"],
+        "broker": st["broker"],
+        "account": acct,
+        "net_deposits": f.net_deposits if f else None,
+        "profit": round(f.profit(acct["equity"]), 2) if f and acct else None,
+        "reserved": f.reserved if f else 0.0,
+        "set_aside_total": f.set_aside_total if f else 0.0,
+        "allocation": alloc,
+        "plan": vars(cfg.autopilot),
+        "checks": items,
+        "ready": all(i["ok"] for i in items if i["level"] == "block"),
+    }
+
+
+@app.post("/api/autopilot/start")
+async def autopilot_start():
+    st = trader_state()
+    items, _ = await _preflight(st["broker"])
+    blockers = [i["text"] + (f": {i['fix']}" if i["fix"] else "") for i in items if i["level"] == "block" and not i["ok"]]
+    if blockers:
+        raise HTTPException(400, "Can't start autopilot yet. " + " | ".join(blockers))
+    try:
+        trader.set_mode("auto", st["broker"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"running": True}
+
+
+@app.post("/api/autopilot/stop")
+async def autopilot_stop():
+    trader.set_mode("off", trader_state()["broker"])
+    return {"running": False}
+
+
+@app.post("/api/autopilot/release")
+async def autopilot_release():
+    """Keep the set-aside profit invested instead of withdrawing it."""
+    return {"released": autopilot.release(trader_state()["broker"])}
+
+
+class TransferIn(BaseModel):
+    amount: float  # zero is rejected by the ledger
+
+
+@app.post("/api/paper/transfer")
+async def paper_transfer(t: TransferIn):
+    """Simulated deposit (+) or withdrawal (-) for the practice account."""
+    try:
+        return {"cash": account.transfer(t.amount)}
+    except TradeError as e:
+        raise HTTPException(400, str(e))

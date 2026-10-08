@@ -10,7 +10,7 @@ from app.config import TRACKED_FUNDS
 from app.models import Article, CongressTrade, FundMove, InsiderTrade, PriceInfo, SocialPost
 
 _BASE_PRICES = {"AAPL": 228, "NVDA": 132, "TSLA": 251, "MSFT": 418, "AMD": 158, "AMZN": 186,
-                "META": 589, "GOOGL": 165, "PLTR": 41, "GME": 22, "SPY": 571}
+                "META": 589, "GOOGL": 165, "PLTR": 41, "GME": 22, "SPY": 571, "VOO": 525}
 
 _HEADLINES = [
     "{t} beats earnings expectations as revenue surges",

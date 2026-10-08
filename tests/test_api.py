@@ -103,3 +103,23 @@ def test_edit_watchlist():
     assert client.put("/api/watchlist", json={"tickers": ["<x>"]}).status_code == 400
     assert client.put("/api/watchlist", json={"tickers": []}).status_code == 422
     client.put("/api/watchlist", json={"tickers": original})
+
+
+def test_autopilot_endpoints():
+    client.post("/api/trading/mode", json={"mode": "off", "broker": "sim"})
+    s = client.get("/api/autopilot").json()
+    assert {"running", "checks", "ready", "plan", "allocation"} <= set(s)
+    assert s["broker"] == "sim" and s["plan"]["core_symbol"] == "VOO"
+    assert client.post("/api/paper/transfer", json={"amount": 2500}).status_code == 200
+    assert client.post("/api/paper/transfer", json={"amount": -10_000_000}).status_code == 400
+    if s["ready"]:
+        assert client.post("/api/autopilot/start").json()["running"] is True
+        assert client.post("/api/autopilot/stop").json()["running"] is False
+    assert "released" in client.post("/api/autopilot/release").json()
+
+
+def test_autopilot_start_blocked_for_live_without_opt_in():
+    client.post("/api/trading/mode", json={"mode": "off", "broker": "robinhood"})
+    r = client.post("/api/autopilot/start")
+    assert r.status_code == 400 and "Can't start autopilot" in r.json()["detail"]
+    client.post("/api/trading/mode", json={"mode": "off", "broker": "sim"})

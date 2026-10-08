@@ -2,13 +2,14 @@
 either does nothing (off), asks you (approve), or places the order (auto)."""
 import asyncio
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from app import data, engine
 from app.config import settings
 from app.notify import push
-from app.trading import calendar, journal, strategy
+from app.trading import autopilot, calendar, journal, strategy
 from app.trading.brokers import Account, Broker, BrokerError, Position, SimBroker
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ class Intent:
     is_exit: bool = False
     urgent: bool = False  # stop-loss
     avg_cost: float | None = None  # for sells: lets us tag loss sales for wash-sale tracking
+    is_core: bool = False  # autopilot index-fund order: its own sizing and limits
 
 
 @dataclass
@@ -42,6 +44,12 @@ class Context:
     new_positions: int = 0
     notes: list[str] = field(default_factory=list)
     ignore_hours: bool = False  # demo-mode "run now" outside market hours
+    spendable: float | None = None  # cash minus reserve and profit set aside (None = all cash)
+    reserved: float = 0.0
+    core_price: float | None = None
+
+    def cash_for_buys(self) -> float:
+        return self.account.cash if self.spendable is None else self.spendable
 
 
 def state() -> dict:
@@ -83,13 +91,14 @@ def check(cfg: strategy.Strategy, i: Intent, ctx: Context) -> list[str]:
     """Every reason this order must not go out. Empty list = allowed."""
     r = cfg.risk
     blocks = []
-    if ctx.trades_today >= r.max_trades_per_day:
+    if ctx.trades_today >= r.max_trades_per_day and not i.is_core:
         blocks.append(f"max {r.max_trades_per_day} trades/day reached")
     value = i.qty * i.price
     if i.qty <= 0:
         blocks.append("quantity is zero (position size too small for this price)")
-    if value > r.max_order_usd * 1.0001:
-        blocks.append(f"order ${value:,.0f} over max ${r.max_order_usd:,.0f}")
+    cap = cfg.autopilot.core_max_order_usd if i.is_core else r.max_order_usd
+    if i.side == "buy" and value > cap * 1.0001:  # caps buying; selling a position that grew must always work
+        blocks.append(f"order ${value:,.0f} over max ${cap:,.0f}")
     if r.max_day_trades_per_5d >= 0 and i.side == "sell" and i.ticker in ctx.bought_today \
             and ctx.day_trades_5d >= r.max_day_trades_per_5d:
         blocks.append(f"would be day trade #{ctx.day_trades_5d + 1} in 5 days (limit {r.max_day_trades_per_5d})")
@@ -97,20 +106,23 @@ def check(cfg: strategy.Strategy, i: Intent, ctx: Context) -> list[str]:
         return blocks  # never block a risk-reducing sell for entry-only reasons
     if ctx.halted:
         blocks.append(f"daily loss limit {r.daily_loss_limit_pct}% hit; no new buys today")
-    if ctx.failed_sources > r.max_failed_sources:
+    if ctx.failed_sources > r.max_failed_sources and not i.is_core:  # the index fund doesn't use signals
         blocks.append(f"{ctx.failed_sources} data sources failing; not buying on partial data")
     if not ctx.ignore_hours and calendar.minutes_since_open(ctx.now) < r.no_trade_open_minutes:
         blocks.append(f"first {r.no_trade_open_minutes} min after open")
     if not ctx.ignore_hours and calendar.minutes_to_close(ctx.now) < r.no_trade_close_minutes:
         blocks.append(f"last {r.no_trade_close_minutes} min before close")
-    if len(ctx.positions) + ctx.new_positions >= cfg.sizing.max_positions and i.ticker not in ctx.positions:
-        blocks.append(f"already at {cfg.sizing.max_positions} positions")
-    held = ctx.positions.get(i.ticker)
-    after = ((held.qty if held else 0) + i.qty) * i.price
-    if ctx.account.equity and after > ctx.account.equity * r.max_position_pct / 100:
-        blocks.append(f"position would be {after / ctx.account.equity:.0%} of equity (max {r.max_position_pct}%)")
-    if value > ctx.account.cash:
-        blocks.append(f"not enough buying power (${ctx.account.cash:,.0f})")
+    if not i.is_core:
+        core = cfg.autopilot.core_symbol if cfg.autopilot.core_pct > 0 else None
+        satellites = [t for t in ctx.positions if t != core]
+        if len(satellites) + ctx.new_positions >= cfg.sizing.max_positions and i.ticker not in ctx.positions:
+            blocks.append(f"already at {cfg.sizing.max_positions} positions")
+        held = ctx.positions.get(i.ticker)
+        after = ((held.qty if held else 0) + i.qty) * i.price
+        if ctx.account.equity and after > ctx.account.equity * r.max_position_pct / 100:
+            blocks.append(f"position would be {after / ctx.account.equity:.0%} of equity (max {r.max_position_pct}%)")
+    if value > ctx.cash_for_buys() + 0.01:
+        blocks.append(f"not enough spendable cash (${ctx.cash_for_buys():,.0f} after reserve and set-aside profit)")
     if r.avoid_wash_sales and i.ticker in ctx.loss_sales_30d:
         blocks.append("sold at a loss in the last 30 days (wash-sale rule)")
     return blocks
@@ -118,8 +130,42 @@ def check(cfg: strategy.Strategy, i: Intent, ctx: Context) -> list[str]:
 
 def plan(cfg: strategy.Strategy, ctx: Context, signals: dict, holdings_age: dict[str, float]) -> list[Intent]:
     intents = []
+    a = cfg.autopilot
+    core = a.core_symbol.upper() if a.core_pct > 0 else None
     eod = cfg.exit.close_at_eod and not ctx.ignore_hours and 0 <= calendar.minutes_to_close(ctx.now) < cfg.risk.no_trade_close_minutes + 5
+    equity = ctx.account.equity
+    spend = ctx.cash_for_buys()
+
+    # 1. Raise cash for profit set aside for withdrawal (trim the core first, else the biggest holding).
+    short = autopilot.cash_shortfall(cfg, equity, ctx.account.cash, ctx.reserved)
+    if short > 1:
+        donors = sorted(ctx.positions.values(), key=lambda p: (p.ticker != core, -p.qty * (
+            signals[p.ticker].price if p.ticker in signals and signals[p.ticker].price else p.avg_cost)))
+        for pos in donors:
+            px = ctx.core_price if pos.ticker == core else (signals.get(pos.ticker).price if signals.get(pos.ticker) else None)
+            if px:
+                qty = min(pos.qty, math.ceil(short / px))
+                intents.append(Intent(pos.ticker, "sell", qty, px, None, [f"raise ${short:,.0f} cash for profit withdrawal"],
+                                      is_exit=True, avg_cost=pos.avg_cost, is_core=pos.ticker == core))
+                break
+
+    # 2. Core index fund: invest deposits / rebalance.
+    if core and ctx.core_price and not any(i.ticker == core for i in intents):
+        held = ctx.positions.get(core)
+        move = autopilot.core_order(cfg, equity, ctx.reserved, spend, held.qty if held else 0, ctx.core_price)
+        if move:
+            side, qty, why = move
+            intents.append(Intent(core, side, qty, ctx.core_price, None, [why], is_exit=side == "sell",
+                                  avg_cost=held.avg_cost if held else None, is_core=True))
+            if side == "buy":
+                spend -= qty * ctx.core_price
+    elif core and not ctx.core_price:
+        ctx.notes.append(f"no price for core fund {core}; core skipped this cycle")
+
+    # 3. Satellite exits (the core is never stop-lossed or rotated by signals).
     for t, pos in ctx.positions.items():
+        if t == core or any(i.ticker == t and i.side == "sell" for i in intents):
+            continue
         sig = signals.get(t)
         price = sig.price if sig and sig.price else None
         if price is None:
@@ -130,17 +176,26 @@ def plan(cfg: strategy.Strategy, ctx: Context, signals: dict, holdings_age: dict
         if reason:
             intents.append(Intent(t, "sell", pos.qty, price, sig.score if sig else None, [reason],
                                   is_exit=True, urgent=reason.startswith("stop-loss")))
+    # 4. Satellite entries, within the satellite budget and spendable cash.
     if not eod:
-        slots = cfg.sizing.max_positions - len(ctx.positions)
+        satellites = {t: p for t, p in ctx.positions.items() if t != core}
+        sat_value = sum(p.qty * (signals[t].price if t in signals and signals[t].price else p.avg_cost)
+                        for t, p in satellites.items())
+        room = min(autopilot.satellite_room(cfg, equity, ctx.reserved, sat_value), spend)
+        slots = cfg.sizing.max_positions - len(satellites)
         for sig in sorted(signals.values(), key=lambda s: -s.score):
-            if slots <= 0:
+            if slots <= 0 or room <= 0:
                 break
-            if sig.ticker in ctx.positions:
+            if sig.ticker in ctx.positions or sig.ticker == core:
                 continue
             reasons = strategy.entry_reasons(cfg, sig)
             if reasons:
-                qty = strategy.position_qty(cfg, ctx.account.equity, sig.price)
+                qty = min(strategy.position_qty(cfg, equity, sig.price), math.floor(room / sig.price))
+                if qty <= 0:
+                    ctx.notes.append(f"{sig.ticker} qualifies but the satellite budget is used up")
+                    break
                 intents.append(Intent(sig.ticker, "buy", qty, sig.price, sig.score, reasons))
+                room -= qty * sig.price
                 slots -= 1
     return intents
 
@@ -279,6 +334,7 @@ class Trader:
             return {"skipped": "kill switch is on"}
         if st["mode"] == "off":
             return {"skipped": "autotrader is off"}
+        await self._weekly_summary(now, st["broker"])
         if not force_open and not calendar.is_open(now):
             return {"skipped": "market closed"}
         if not calendar.calendar_known(now):
@@ -288,6 +344,7 @@ class Trader:
         try:
             ctx = await self._context(broker, now)
             ctx.ignore_hours = force_open
+            await self._funding(cfg, broker, ctx, now)
         except Exception as e:  # noqa: BLE001
             last = journal.get("broker_alert_at")
             if not last or now - datetime.fromisoformat(last) > timedelta(hours=1):  # don't spam every cycle
@@ -330,11 +387,72 @@ class Trader:
             else:
                 d = await self.execute(broker, cfg, i, "auto")
                 out["actions"].append({"ticker": i.ticker, "side": i.side, "status": d["status"]})
-            ctx.trades_today += 1
+            if not i.is_core:
+                ctx.trades_today += 1
             if i.side == "buy":
-                ctx.new_positions += 1
+                ctx.new_positions += 0 if i.is_core else 1
                 ctx.account.cash -= i.qty * i.price
+                if ctx.spendable is not None:
+                    ctx.spendable -= i.qty * i.price
+        out["autopilot"] = {"net_deposits": journal.get(f"ap:{broker.name}:net_deposits"),
+                            "reserved": ctx.reserved, "spendable": ctx.spendable}
         return out
+
+    async def _core_price(self, cfg) -> float | None:
+        if cfg.autopilot.core_pct <= 0:
+            return None
+        p = await data.get_price(cfg.autopilot.core_symbol.upper())
+        return p.price if p else None
+
+    def _budget(self, cfg, ctx: Context, f) -> None:
+        ctx.reserved = f.reserved if f else 0.0
+        ctx.spendable = autopilot.spendable(cfg, ctx.account.equity, ctx.account.cash, ctx.reserved)
+
+    async def _funding(self, cfg, broker: Broker, ctx: Context, now: datetime) -> None:
+        """Detect deposits/withdrawals, set profit aside when due, and set this cycle's budget."""
+        last_ts = journal.get(f"ap:{broker.name}:last_ts")
+        orders = journal.executed_since(datetime.fromisoformat(last_ts)) if last_ts else []
+        known = broker.net_deposits() if hasattr(broker, "net_deposits") else None
+        f = autopilot.update_funding(broker.name, ctx.account.equity, ctx.account.cash, orders, now.isoformat(), known)
+        autopilot.maybe_pull(cfg, f, ctx.account.equity, broker.name, ctx.account.cash, now.isoformat())
+        for kind, amount in f.events:
+            if kind == "deposit":
+                await push("Signal Desk: deposit received",
+                           f"${amount:,.2f} arrived. Autopilot will invest it per your plan "
+                           f"({cfg.autopilot.core_pct:.0f}% {cfg.autopilot.core_symbol}, the rest by signals).")
+            elif kind == "withdrawal":
+                await push("Signal Desk: withdrawal noticed", f"${amount:,.2f} left the account.")
+            elif kind == "pull":
+                await push("Signal Desk: profit ready to withdraw",
+                           f"You're up ${f.profit(ctx.account.equity):,.2f} on ${f.net_deposits:,.2f} deposited. "
+                           f"${f.reserved:,.2f} is set aside as cash and won't be reinvested. Withdraw it in the "
+                           f"Robinhood app (Agentic account, then Transfer).", priority="high")
+        self._budget(cfg, ctx, f)
+        ctx.core_price = await self._core_price(cfg)
+
+    async def _weekly_summary(self, now: datetime, broker_name: str) -> None:
+        cfg = self.cfg()
+        week = autopilot.weekly_summary_due(now) if cfg.autopilot.weekly_summary else None
+        if not week:
+            return
+        journal.put("ap:summary_week", week)
+        try:
+            acct = await self.broker(broker_name).account()
+        except Exception as e:  # noqa: BLE001
+            await push("Signal Desk: weekly summary", f"Couldn't reach the broker for the weekly summary: {e}"[:300])
+            return
+        f = autopilot.load(broker_name)
+        week_start = now - timedelta(days=7)
+        trades = [d for d in journal.executed_since(week_start)]
+        lines = [f"Account value ${acct.equity:,.2f}"]
+        if f:
+            p = f.profit(acct.equity)
+            lines.append(f"Profit ${p:+,.2f} ({p / f.net_deposits * 100:+.1f}%) on ${f.net_deposits:,.2f} deposited"
+                         if f.net_deposits else f"Profit ${p:+,.2f}")
+            if f.reserved:
+                lines.append(f"${f.reserved:,.2f} set aside, ready to withdraw")
+        lines.append(f"{len(trades)} order(s) this week")
+        await push(f"Signal Desk: week {week[-3:]} summary", ". ".join(lines) + ".")
 
     async def approve(self, proposal_id: int, now: datetime | None = None, force_open: bool = False) -> dict:
         now = now or journal.now()
@@ -356,7 +474,10 @@ class Trader:
                 raise ValueError(f"no current price for {p['ticker']}")
             ctx = await self._context(broker, now)
             ctx.ignore_hours = force_open
-            i = Intent(p["ticker"], p["side"], p["qty"], fresh.price, p["score"], p["reasons"], is_exit=p["side"] == "sell")
+            self._budget(cfg, ctx, autopilot.load(broker.name))
+            is_core = cfg.autopilot.core_pct > 0 and p["ticker"] == cfg.autopilot.core_symbol.upper()
+            i = Intent(p["ticker"], p["side"], p["qty"], fresh.price, p["score"], p["reasons"],
+                       is_exit=p["side"] == "sell", is_core=is_core)
             if i.is_exit and i.ticker in ctx.positions:
                 i.avg_cost = ctx.positions[i.ticker].avg_cost
             blocks = check(cfg, i, ctx)

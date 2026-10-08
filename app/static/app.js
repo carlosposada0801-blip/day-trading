@@ -244,6 +244,60 @@ async function loadBacktest() {
     <p class="note">${b.snapshots} score snapshots recorded so far; the full-score track record fills in as the app runs. No trading costs included.${b.demo ? " <b>Demo data: these numbers mean nothing.</b>" : ""}</p>`;
 }
 
+let apState = null;
+async function loadAutopilot() {
+  const a = await api("/api/autopilot");
+  apState = a;
+  const st = $("#ap-state");
+  st.textContent = a.running ? "RUNNING" : "OFF";
+  st.className = "pill " + (a.running ? "on" : "off");
+  $("#ap-broker").textContent = a.broker === "robinhood" ? "Robinhood Agentic account" : "Practice account (pretend money)";
+  const btn = $("#ap-toggle");
+  btn.textContent = a.running ? "Stop autopilot" : "Start autopilot";
+  btn.classList.toggle("stop", a.running);
+  btn.disabled = !a.running && !a.ready;
+  btn.title = !a.running && !a.ready ? "Fix the red items below first" : "";
+  $("#ap-practice").hidden = a.broker !== "sim";
+
+  const acct = a.account;
+  const profitPct = a.profit != null && a.net_deposits ? (a.profit / a.net_deposits) * 100 : null;
+  $("#ap-kpis").innerHTML = !acct ? `<p class="meta">Can't reach the account right now. See the checklist.</p>` : `
+    <div><div class="meta">You've put in</div><div class="v">${a.net_deposits == null ? "—" : money(a.net_deposits)}</div>
+      <div class="sub">deposits minus withdrawals</div></div>
+    <div><div class="meta">Worth now</div><div class="v">${money(acct.equity)}</div></div>
+    <div><div class="meta">Profit</div><div class="v ${cls(a.profit ?? 0)}">${a.profit == null ? "—" : (a.profit >= 0 ? "+" : "") + money(a.profit)}</div>
+      <div class="sub">${profitPct == null ? "" : (profitPct >= 0 ? "+" : "") + fmt(profitPct) + "%"}</div></div>
+    <div><div class="meta">Ready to withdraw</div><div class="v">${money(a.reserved || 0)}</div>
+      <div class="sub">${a.reserved > 0 ? (a.broker === "robinhood" ? "Withdraw in the Robinhood app" : "Use Withdraw below") : `set aside once you're up ${a.plan.profit_pull_trigger_pct}%`}</div>
+      ${a.reserved > 0 ? `<button id="ap-release" title="Put this money back to work instead">Keep it invested</button>` : ""}</div>`;
+  $("#ap-release")?.addEventListener("click", async () => {
+    if (!confirm("Put the set-aside profit back to work instead of withdrawing it?")) return;
+    await post("/api/autopilot/release"); loadAutopilot();
+  });
+
+  const al = a.allocation;
+  if (al) {
+    const parts = [["core", `Core (${a.plan.core_symbol})`, al.core], ["sat", "Signal trades", al.satellites],
+                   ["cash", "Cash", al.cash], ["aside", "Set aside for you", al.set_aside]];
+    const total = parts.reduce((s, p) => s + p[2], 0) || 1;
+    const shown = parts.filter((p) => p[2] > 0.5);
+    $("#ap-alloc").innerHTML = `<div class="stack" role="img" aria-label="${shown.map((p) => `${p[1]} ${Math.round((p[2] / total) * 100)}%`).join(", ")}">
+        ${shown.map((p) => `<i class="seg-${p[0]}" style="flex:${p[2]}" title="${esc(p[1])}: ${money(p[2])}"></i>`).join("")}</div>
+      <div class="legend">${parts.map((p) => `<span><i class="sw seg-${p[0]}"></i>${esc(p[1])} <b>${money(p[2])}</b> ${Math.round((p[2] / total) * 100)}%</span>`).join("")}</div>`;
+  } else $("#ap-alloc").innerHTML = "";
+
+  const pl = a.plan;
+  $("#ap-plan").innerHTML = `
+    ${pl.core_pct > 0 ? `<b>${pl.core_pct}%</b> in ${esc(pl.core_symbol)} (a broad index fund), rebalanced when it drifts ${pl.rebalance_band_pct}%.<br>` : "No core fund: everything follows signals.<br>"}
+    <b>${Math.max(0, 100 - pl.core_pct - pl.cash_reserve_pct)}%</b> traded by the signal rules · <b>${pl.cash_reserve_pct}%</b> kept as cash.<br>
+    New deposits are found automatically and invested in steps of up to ${money(pl.core_max_order_usd).replace(".00", "")}.<br>
+    Once you're up <b>${pl.profit_pull_trigger_pct}%</b>, <b>${pl.profit_pull_share_pct}%</b> of the profit is set aside as cash and you're notified to withdraw it.
+    ${pl.weekly_summary ? "<br>Weekly summary to your phone after Friday's close." : ""}`;
+  $("#ap-checks").innerHTML = a.checks.map((c) => `<li>
+      <span class="mark ${c.ok ? "ok" : c.level === "block" ? "bad" : "warn"}">${c.ok ? "✓" : c.level === "block" ? "✕" : "!"}</span>
+      <span>${esc(c.text)}${c.fix ? `<span class="fix">${esc(c.fix)}</span>` : ""}</span></li>`).join("");
+}
+
 const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
 let tstate = null;
 
@@ -347,7 +401,7 @@ async function refresh() {
   btn.disabled = true;
   btn.classList.add("loading");
   try {
-    await Promise.all([loadSignals(), loadSide(), loadPaper(), loadAlerts(), loadTrader()]);
+    await Promise.all([loadSignals(), loadSide(), loadPaper(), loadAlerts(), loadTrader(), loadAutopilot()]);
     if (selected) await showDetail(selected, false).catch(closeDetail);  // e.g. a remembered ticker that no longer resolves
     lastUpdated = Date.now();
   } catch (e) { fail(e); }
@@ -465,6 +519,31 @@ document.querySelectorAll("#signals thead th").forEach((th, i) => {
   th.addEventListener("keydown", (e) => { if (e.key === "Enter") sort(); });
 });
 $("#close-detail").addEventListener("click", closeDetail);
+$("#ap-toggle").addEventListener("click", async () => {
+  try {
+    if (apState?.running) {
+      await post("/api/autopilot/stop");
+      toast("Autopilot stopped. Nothing will be bought or sold until you start it again.");
+    } else {
+      const live = apState?.broker === "robinhood";
+      if (!confirm(live
+        ? "Start autopilot on your Robinhood Agentic account? It will buy and sell with real money without asking you, within your strategy.toml limits."
+        : "Start autopilot on the practice account? It will trade pretend money automatically.")) return;
+      await post("/api/autopilot/start");
+      toast("Autopilot running.");
+    }
+  } catch (e) { fail(e); }
+  loadAutopilot(); loadTrader();
+});
+$("#ap-transfer").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const amount = Number($("#ap-amount").value) * Number(e.submitter.dataset.dir);
+  try {
+    await post("/api/paper/transfer", { amount });
+    toast(`${amount > 0 ? "Deposited" : "Withdrew"} ${money(Math.abs(amount))} (practice). Autopilot picks it up on its next run.`);
+  } catch (err) { fail(err); }
+  loadAutopilot(); loadPaper();
+});
 $("#theme").addEventListener("click", cycleTheme);
 $("#help").addEventListener("click", () => $("#keys").showModal());
 $("#header-stop").addEventListener("click", () => $("#kill").click());

@@ -50,6 +50,19 @@ class Schedule:
 
 
 @dataclass
+class Autopilot:
+    core_symbol: str = "VOO"          # broad index fund that holds most of the money
+    core_pct: float = 60              # % of investable equity kept in the core fund (0 = none)
+    cash_reserve_pct: float = 5       # % of equity always left in cash
+    rebalance_band_pct: float = 5     # only rebalance the core when it's this far off target
+    core_max_order_usd: float = 5000  # new deposits are invested in steps of at most this
+    profit_pull_trigger_pct: float = 10  # set profits aside once you're up this % on what you put in
+    profit_pull_share_pct: float = 50    # ...and set aside this share of the profit
+    min_pull_usd: float = 50          # ignore smaller amounts
+    weekly_summary: bool = True       # push a summary after Friday's close
+
+
+@dataclass
 class RobinhoodCfg:
     mcp_url: str = "https://agent.robinhood.com/mcp/trading"
     tools: dict = field(default_factory=dict)
@@ -63,6 +76,7 @@ class Strategy:
     sizing: Sizing = field(default_factory=Sizing)
     risk: Risk = field(default_factory=Risk)
     schedule: Schedule = field(default_factory=Schedule)
+    autopilot: Autopilot = field(default_factory=Autopilot)
     robinhood: RobinhoodCfg = field(default_factory=RobinhoodCfg)
 
 

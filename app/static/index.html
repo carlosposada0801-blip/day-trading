@@ -25,9 +25,33 @@
     <button id="help" class="icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
     <form method="post" action="/logout"><button type="submit" class="ghost-btn">Log out</button></form>
   </header>
-  <p class="disclaimer">Signals are heuristic summaries of public chatter and filings, not financial advice. Real orders are placed only when the Autotrader is connected to Robinhood and switched on.</p>
+  <p class="disclaimer">Signals are heuristic summaries of public chatter and filings, not financial advice. Real money moves only when Autopilot or the Autotrader is connected to Robinhood and switched on.</p>
 
   <main>
+    <section class="card wide" id="autopilot">
+      <div class="card-head">
+        <h2>Autopilot</h2>
+        <span id="ap-state" class="pill"></span>
+        <span id="ap-broker" class="meta"></span>
+        <button id="ap-toggle" class="buy ap-toggle">Start autopilot</button>
+      </div>
+      <div id="ap-kpis" class="ap-kpis"></div>
+      <div id="ap-alloc" class="ap-alloc"></div>
+      <div class="cols">
+        <div><h3>Your plan <span class="meta">(edit strategy.toml)</span></h3><div id="ap-plan" class="meta"></div></div>
+        <div><h3>Before going hands-off</h3><ul id="ap-checks" class="feed checks"></ul></div>
+        <div id="ap-practice" hidden>
+          <h3>Practice money</h3>
+          <p class="meta">Try the autopilot with pretend deposits and withdrawals.</p>
+          <form id="ap-transfer" class="prop">
+            <input id="ap-amount" type="number" min="1" step="any" value="1000" aria-label="Amount in dollars">
+            <button type="submit" data-dir="1" class="buy">Deposit</button>
+            <button type="submit" data-dir="-1">Withdraw</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
     <section class="card wide">
       <div class="card-head">
         <h2>Watchlist signals</h2>

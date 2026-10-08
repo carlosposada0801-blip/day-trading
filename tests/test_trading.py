@@ -70,10 +70,12 @@ def test_risk_checks(cfg):
     assert any("after open" in b for b in check(cfg, ok, ctx(now=early)))
     full = {t: Position(t, 1, 1) for t in "BCDEF"}
     assert any("positions" in b for b in check(cfg, ok, ctx(positions=full)))
-    assert any("buying power" in b for b in check(cfg, ok, ctx(account=Account(100_000, 500))))
+    assert any("spendable cash" in b for b in check(cfg, ok, ctx(account=Account(100_000, 500))))
     # exits ignore entry-only limits...
     sell = Intent("A", "sell", 10, 100, -50, ["stop"], is_exit=True)
     assert check(cfg, sell, ctx(halted=True, failed_sources=5, positions=full)) == []
+    big_winner = Intent("A", "sell", 100, 100, 50, ["take-profit"], is_exit=True)  # $10k > $2k order cap
+    assert check(cfg, big_winner, ctx()) == []
     # ...but respect the day-trade limit
     assert any("day trade" in b for b in check(cfg, sell, ctx(bought_today={"A"}, day_trades_5d=3)))
     cfg.risk.max_day_trades_per_5d = -1
@@ -98,10 +100,13 @@ def test_plan_exits_before_entries(cfg):
 @pytest.fixture
 def loose(tmp_path, monkeypatch):
     p = tmp_path / "strategy.toml"
-    p.write_text("[entry]\nmin_score = -100\nmin_confidence = 0\n[sizing]\nmax_positions = 2\n")
+    p.write_text("[entry]\nmin_score = -100\nmin_confidence = 0\n[sizing]\nmax_positions = 2\n"
+                 "[autopilot]\ncore_pct = 0\ncash_reserve_pct = 0\n")
     monkeypatch.setattr(settings, "strategy_path", str(p))
     for k in ("mode", "broker", "kill_switch", "halted_on"):
         journal.put(k, None)
+    journal._db().execute("DELETE FROM decisions")  # trades from other tests would count toward today's limits
+    journal._db().execute("DELETE FROM proposals")
     journal.put("kill_switch", False)
     return Trader(PaperAccount(":memory:", starting_cash=100_000))
 

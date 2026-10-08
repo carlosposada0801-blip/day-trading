@@ -16,13 +16,32 @@ class PaperAccount:
         self.starting_cash = starting_cash if starting_cash is not None else settings.starting_cash
         self.db.execute("""CREATE TABLE IF NOT EXISTS trades (
             id INTEGER PRIMARY KEY, ts TEXT, ticker TEXT, side TEXT, qty REAL, price REAL, note TEXT)""")
+        # Simulated deposits (+) and withdrawals (-), so autopilot funding can be practiced.
+        self.db.execute("CREATE TABLE IF NOT EXISTS cash_flows (id INTEGER PRIMARY KEY, ts TEXT, amount REAL)")
         self.db.commit()
 
     def trades(self) -> list[dict]:
         return [dict(r) for r in self.db.execute("SELECT * FROM trades ORDER BY id DESC")]
 
+    def contributed(self) -> float:
+        """Starting cash plus net simulated deposits."""
+        flows = self.db.execute("SELECT COALESCE(SUM(amount), 0) FROM cash_flows").fetchone()[0]
+        return self.starting_cash + flows
+
+    def transfer(self, amount: float) -> float:
+        """Simulate a deposit (amount > 0) or withdrawal (amount < 0). Returns new cash."""
+        cash, _ = self._state()
+        if amount == 0:
+            raise TradeError("amount must not be zero")
+        if amount < 0 and -amount > cash + 1e-6:
+            raise TradeError(f"can't withdraw ${-amount:,.2f}; only ${cash:,.2f} in cash")
+        self.db.execute("INSERT INTO cash_flows (ts, amount) VALUES (?, ?)",
+                        (datetime.now(timezone.utc).isoformat(), amount))
+        self.db.commit()
+        return round(cash + amount, 2)
+
     def _state(self) -> tuple[float, dict[str, dict]]:
-        cash = self.starting_cash
+        cash = self.contributed()
         pos: dict[str, dict] = {}
         for t in self.db.execute("SELECT * FROM trades ORDER BY id"):
             p = pos.setdefault(t["ticker"], {"qty": 0.0, "cost": 0.0, "realized": 0.0})
@@ -54,11 +73,12 @@ class PaperAccount:
         equity = cash + mkt_value
         return {"cash": round(cash, 2), "equity": round(equity, 2), "positions": positions,
                 "realized_pnl": round(realized, 2),
-                "total_pnl": round(equity - self.starting_cash, 2),
-                "total_pnl_pct": round((equity / self.starting_cash - 1) * 100, 2)}
+                "contributed": round(self.contributed(), 2),
+                "total_pnl": round(equity - self.contributed(), 2),
+                "total_pnl_pct": round((equity / self.contributed() - 1) * 100, 2) if self.contributed() else 0.0}
 
     def order(self, ticker: str, side: str, qty: float, price: float,
-              prices: dict[str, float], note: str = "") -> dict:
+              prices: dict[str, float], note: str = "", enforce_limit: bool = True) -> dict:
         ticker = ticker.upper()
         if side not in ("buy", "sell"):
             raise TradeError("side must be 'buy' or 'sell'")
@@ -70,7 +90,8 @@ class PaperAccount:
             if qty * price > cash + 1e-6:
                 raise TradeError(f"insufficient cash: need ${qty * price:,.2f}, have ${cash:,.2f}")
             equity = self.summary({**prices, ticker: price})["equity"]
-            if (held + qty) * price > settings.max_position_pct * equity:
+            # Manual paper trades get this guardrail; the autotrader applies its own limits instead.
+            if enforce_limit and (held + qty) * price > settings.max_position_pct * equity:
                 raise TradeError(f"position would exceed {settings.max_position_pct:.0%} of equity "
                                  f"(risk limit, set MAX_POSITION_PCT to change)")
         elif qty > held + 1e-9:
@@ -83,4 +104,5 @@ class PaperAccount:
 
     def reset(self) -> None:
         self.db.execute("DELETE FROM trades")
+        self.db.execute("DELETE FROM cash_flows")
         self.db.commit()

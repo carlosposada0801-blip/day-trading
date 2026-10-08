@@ -103,6 +103,52 @@ rate** is how often bullish/bearish calls got the direction right; 50% is a coin
 **Long − short** is the average return after bullish calls minus after bearish ones.
 Trading costs and slippage are ignored, so real results would be worse.
 
+## Autopilot (hands-off)
+
+Put money into the account and let it run. The Autopilot panel sits at the top of the
+dashboard.
+
+**What it does every cycle while the market is open:**
+1. **Finds deposits and withdrawals.** It compares the account's cash with what its own
+   orders explain. A jump up is a deposit, a drop is a withdrawal. You get a phone alert
+   either way, and "You've put in" stays accurate so profit is measured honestly.
+2. **Invests in a core index fund.** By default 60% of the money goes into VOO and is
+   rebalanced only when it drifts more than 5%. Big deposits are invested in steps of up to
+   $5,000 per cycle.
+3. **Trades the rest on signals.** 35% goes to the signal strategy, under all the Autotrader
+   limits below, and never beyond its own budget. 5% always stays in cash.
+4. **Sets profit aside for you.** Once you're up 10% on what you've put in, half the profit
+   is set aside as cash. If there isn't enough cash, it sells some holdings (the core fund
+   first). That cash is never reinvested, and you get a phone alert to withdraw it. Later
+   profits are set aside the same way, but only above the previous high, so a dip never
+   re-triggers it. Withdrawing the money in the Robinhood app clears it automatically, or
+   click **Keep it invested** to put it back to work.
+5. **Weekly summary** to your phone after Friday's close: value, profit, set-aside cash,
+   number of orders.
+
+**Starting it:** click **Start autopilot**. It runs a pre-flight checklist first and won't
+start until every required item passes. For Robinhood the required items are:
+- the broker connection works and the account has money in it
+- `ALLOW_LIVE_AUTO=1` is set
+- phone notifications are configured
+- the kill switch is off
+- the market calendar covers the current year
+
+It also warns (without blocking) if your signal rules didn't beat holding SPY in the
+backtest, and reminds you the app has to run on an always-on machine.
+
+**Practice first:** with the practice account selected, the panel has Deposit and
+Withdraw buttons for pretend money, so you can watch the whole cycle before using
+Robinhood.
+
+**Why it won't move money to your bank on its own:** the Robinhood connection is built for
+trading, and an app that can send money out of your account is a much bigger risk if
+anything goes wrong (a bug, a stolen login token). Withdrawing stays a two-tap step in the
+Robinhood app; Autopilot does the deciding and tells you when.
+
+All of the numbers above are settings under `[autopilot]` in `strategy.toml`. Set
+`core_pct = 0` to have everything follow signals, or raise it to be more conservative.
+
 ## Autotrader
 
 The Autotrader panel turns signals into trades under rules you control in `strategy.toml`.

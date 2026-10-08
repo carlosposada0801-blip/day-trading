@@ -36,6 +36,19 @@ limit_band_pct = 0.5      # limit orders at last price +/- this %, never market 
 interval_min = 5          # how often the autotrader runs during market hours
 proposal_ttl_min = 15     # approval requests expire after this (prices go stale)
 
+[autopilot]
+# Hands-off investing: deposits are detected and invested, profits are set aside for you to withdraw.
+# Most of the money sits in a broad index fund ("core"); the signal strategy trades the rest.
+core_symbol = "VOO"
+core_pct = 60               # % of investable money in the core fund. 0 = everything follows signals.
+cash_reserve_pct = 5        # always keep this % in cash
+rebalance_band_pct = 5      # rebalance the core only when it drifts this far from target
+core_max_order_usd = 5000   # invest big deposits in steps no larger than this
+profit_pull_trigger_pct = 10   # once you're up this % on what you deposited...
+profit_pull_share_pct = 50     # ...set this share of the profit aside as cash and tell you to withdraw it
+min_pull_usd = 50
+weekly_summary = true       # phone summary after Friday's close
+
 [robinhood]
 mcp_url = "https://agent.robinhood.com/mcp/trading"
 # If Robinhood names its tools differently, map them here, e.g. positions = "get_equity_positions"
