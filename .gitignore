@@ -6,3 +6,4 @@ __pycache__/
 .env
 robinhood_tokens.json
 data/
+signal-desk.lock

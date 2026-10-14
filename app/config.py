@@ -38,6 +38,8 @@ class Settings:
     data_dir: str = os.getenv("DATA_DIR", ".")  # where broker login tokens are kept
     # Where your browser reaches this app; Robinhood's login redirects back here.
     public_url: str = os.getenv("PUBLIC_URL", f"http://127.0.0.1:{os.getenv('PORT', '8000')}")
+    # Authenticator-app secret for 2-step login. Create one with: python -m app.totp
+    totp_secret: str = os.getenv("TOTP_SECRET", "")
     strategy_path: str = os.getenv("STRATEGY_PATH", "strategy.toml")
     # Required before the autotrader may place orders on Robinhood without your approval.
     allow_live_auto: bool = os.getenv("ALLOW_LIVE_AUTO", "0") == "1"
@@ -71,3 +73,10 @@ TRACKED_FUNDS: dict[str, str] = {
     "ARK Investment Management": "0001697748",
     "Renaissance Technologies": "0001037389",
 }
+
+
+def is_public() -> bool:
+    """True when the site is served on the internet (an https address that isn't this machine)."""
+    from urllib.parse import urlparse
+    u = urlparse(settings.public_url)
+    return u.scheme == "https" and u.hostname not in ("localhost", "127.0.0.1", "::1")

@@ -6,12 +6,13 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from app import alerts, auth, backtest, data, engine, signals, store
-from app.config import TRACKED_FUNDS, settings
+from app.config import TRACKED_FUNDS, is_public, settings
+from app.instance_lock import InstanceLock
 from app.paper import PaperAccount, TradeError
 from app.trading import calendar as market
 from app.trading import autopilot, journal, penny, simulate
@@ -22,23 +23,71 @@ from app.trading.trader import Trader
 from app.trading.trader import state as trader_state
 
 
+problems = auth.startup_problems()
+if problems:  # refuse to put a money-moving site on the internet with weak protection
+    raise SystemExit("Signal Desk won't start on a public address until these are fixed:\n  - "
+                     + "\n  - ".join(problems))
+
+_instance = InstanceLock(settings.data_dir)
+
+
 @contextlib.asynccontextmanager
 async def lifespan(_app: FastAPI):
     saved = journal.get("watchlist")
     if saved:  # a watchlist edited in the dashboard overrides WATCHLIST from .env
         settings.watchlist[:] = saved
     tasks = []
-    if settings.alerts_enabled:
-        tasks.append(asyncio.create_task(alerts.loop()))
-    if settings.trader_enabled:
-        tasks.append(asyncio.create_task(trader.loop()))
+    # Only one running copy may trade: hosts can briefly run two during a redeploy.
+    if (settings.alerts_enabled or settings.trader_enabled) and not _instance.acquire():
+        print("Another copy of Signal Desk holds the trading lock; this copy serves pages only.", flush=True)
+    else:
+        if settings.alerts_enabled:
+            tasks.append(asyncio.create_task(alerts.loop()))
+        if settings.trader_enabled:
+            tasks.append(asyncio.create_task(trader.loop()))
     yield
     for t in tasks:
         t.cancel()
+    _instance.release()
 
 
-app = FastAPI(title="Signal Desk", version="0.2.0", lifespan=lifespan)
+_public = is_public()
+app = FastAPI(title="Signal Desk", version="0.3.0", lifespan=lifespan,
+              docs_url=None if _public else "/docs", redoc_url=None,
+              openapi_url=None if _public else "/openapi.json")
 app.middleware("http")(auth.middleware)
+
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+       "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'")
+
+
+def _origin_ok(request: Request) -> bool:
+    """State-changing requests must come from this site's own pages (defense against
+    other websites submitting forms to it, on top of the SameSite cookie)."""
+    origin = request.headers.get("origin")
+    if not origin:  # non-browser clients and some same-origin form posts omit it
+        return True
+    allowed = {settings.public_url.rstrip("/"), f"{request.url.scheme}://{request.headers.get('host', '')}"}
+    return origin.rstrip("/") in allowed
+
+
+@app.middleware("http")
+async def security(request: Request, call_next):
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and not _origin_ok(request):
+        return JSONResponse({"detail": "cross-site request blocked"}, status_code=403)
+    resp = await call_next(request)
+    resp.headers["Content-Security-Policy"] = CSP
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    # "same-origin", not "no-referrer": with no-referrer, browsers send "Origin: null" on the site's
+    # own form posts, which the cross-site check above would reject (it blocked sign-in).
+    resp.headers["Referrer-Policy"] = "same-origin"
+    resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    if auth.cookie_secure():
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if request.url.path.startswith("/api/"):
+        resp.headers["Cache-Control"] = "no-store"
+    return resp
 STATIC = Path(__file__).parent / "static"
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 account = PaperAccount()
@@ -61,21 +110,29 @@ async def _prices_for(tickers) -> dict[str, float]:
 
 # ---- login -------------------------------------------------------------------------------
 
+@app.get("/healthz")
+async def healthz():
+    """For uptime monitors. Says only whether the site is up and the trader loop is alive."""
+    last = journal.get("last_cycle")
+    return {"ok": True, "trader_last_run": last}
+
+
 @app.get("/login")
 async def login_page():
-    return FileResponse(STATIC / "login.html")
+    html = (STATIC / "login.html").read_text()
+    return HTMLResponse(html.replace('data-2fa="0"', f'data-2fa="{1 if auth.two_factor() else 0}"'))
 
 
 @app.post("/login")
-async def login(request: Request, password: str = Form(...)):
+async def login(request: Request, password: str = Form(...), code: str = Form("")):
     ip = request.client.host if request.client else "?"
     if auth.locked_out(ip):
         return RedirectResponse("/login?error=locked", status_code=303)
-    if not auth.check_password(ip, password):
+    if not auth.check_login(ip, password, code):
         return RedirectResponse("/login?error=1", status_code=303)
     resp = RedirectResponse("/", status_code=303)
     resp.set_cookie(auth.COOKIE, auth.make_token(), max_age=auth.SESSION_DAYS * 86400, httponly=True,
-                    samesite="strict", secure=request.url.scheme == "https")
+                    samesite="strict", secure=auth.cookie_secure())
     return resp
 
 

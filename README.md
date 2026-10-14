@@ -7,27 +7,87 @@ and can trade on its own (practice account or Robinhood) under strict rules you 
 
 > Not financial advice. Automated trading can lose money quickly; start in practice mode.
 
-## Run it (just for you)
+## Put it online (your own website)
+
+Signal Desk runs as a private website at your own address, e.g. `https://desk.yourname.com`.
+You open it from any browser, on your phone or computer. Hosting it also keeps it running
+around the clock, which Autopilot needs: deposits only get invested and stop-losses only fire
+while it runs.
+
+**What you need**
+- A small Linux server ("VPS") from any cloud host. The smallest size is plenty.
+- A domain name, from any domain registrar.
+
+**Steps**
+1. **Point the domain at the server.** At your registrar, add an `A` record for the name you
+   want (e.g. `desk`) with your server's IP address.
+2. **Install Docker on the server** (the host's docs show how; usually one command).
+3. **Copy the project to the server.** Keep your GitHub repo private, then
+   `git clone` it onto the server.
+4. **Create your settings:** `cp .env.example .env`, then fill in:
+   - `DOMAIN`: e.g. `desk.yourname.com`
+   - `APP_PASSWORD`: at least 12 characters
+   - `SECRET_KEY`: long random text. Generate it with
+     `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`
+   - `TOTP_SECRET`: run `docker compose run --rm app python -m app.totp`, add the key it shows
+     to an authenticator app (Google Authenticator, Authy, 1Password, ...), and paste the
+     `TOTP_SECRET=` line it prints.
+   - `USER_AGENT` (with your email) and `ALERT_WEBHOOK_URL` for phone alerts.
+5. **Start it:** `docker compose up -d`. Caddy gets a free HTTPS certificate for your domain on
+   its own within a minute. Open `https://your-domain` and sign in with your password and the
+   6-digit code from your app.
+6. **Watch it:** add `https://your-domain/healthz` to a free uptime monitor so you're told if
+   it ever goes down.
+
+Updating later: `git pull && docker compose up -d --build`. Your data, settings and Robinhood
+login live in `./data` and `.env` on the server and survive updates.
+
+**Other hosts** (Render, Railway, Fly.io, ...) can run the same `Dockerfile`:
+- Attach a persistent disk/volume at `/data`.
+- Set the same variables, plus `PUBLIC_URL=https://your-address` and
+  `FORWARDED_ALLOW_IPS=*`.
+- Run exactly one instance.
+
+Free tiers that put sites to sleep when idle won't work, since the trader must keep running.
+
+### How it's protected
+
+The site moves real money, so on a public `https` address it refuses to start unless:
+- the password is 12+ characters
+- `SECRET_KEY` is set
+- 2-step login is on
+
+On top of that:
+- **2-step login:** a fresh 6-digit code from your phone each time you sign in. Each code
+  works once.
+- **Throttling:** 5 wrong tries locks that address out for 15 minutes; 20 across all
+  addresses locks every login for 15 minutes.
+- **Sessions:** last 14 days (`SESSION_DAYS`). Changing the password, `SECRET_KEY` or
+  `TOTP_SECRET` signs out every session.
+- **Locked-down cookie and browser:** the login cookie is HTTPS-only, invisible to scripts,
+  and never sent to other sites. Strict browser security headers stop other websites from
+  framing the page or submitting forms to it.
+- **No public API docs.** The developer pages are switched off on the public site.
+- **Health check only:** `/healthz` is the only page reachable without signing in. It shows
+  just "ok" and when the trader last ran.
+- **One trader at a time:** a lock file makes sure only one running copy can trade, even if
+  the host briefly starts two during an update.
+- **Runs without admin rights** inside the container, and only Caddy is reachable from
+  outside.
+- **Secrets stay out of git:** `.env`, `data/` (database, Robinhood login) and caches are
+  git-ignored. Keep the GitHub repo private (Settings → General → Danger Zone → Change
+  visibility).
+- **The server is the weak point.** Anyone with access to it can read the Robinhood login
+  token in `data/`. Use SSH keys, not a password, to log in to it, and keep it updated.
+
+### Running it on your own computer instead
 
 ```bash
 pip install -r requirements.txt
-cp .env.example .env        # then set APP_PASSWORD at minimum
-python -m app               # http://127.0.0.1:8000
-DEMO_MODE=1 python -m app   # synthetic data, works offline
+cp .env.example .env        # set APP_PASSWORD at minimum
+python -m app               # http://127.0.0.1:8000, reachable only from this computer
+DEMO_MODE=1 python -m app   # pretend data, works offline
 ```
-
-### Privacy
-
-- **Password login.** Every page and API call needs it. Five wrong tries locks logins from
-  that address for 15 minutes. Sessions last 14 days (`SESSION_DAYS`). Changing
-  `APP_PASSWORD` logs out every session. If `APP_PASSWORD` is unset, a random one is
-  printed at startup so the app is never left open.
-- **Your machine only.** `python -m app` listens on `127.0.0.1`, so other devices can't
-  reach it. To use it from your phone, put it behind a private tunnel such as Tailscale
-  rather than opening a port to the internet.
-- **Secrets stay out of git.** `.env`, the SQLite database (paper trades, alerts, score
-  history) and caches are git-ignored.
-- **Keep the GitHub repo private** (Settings → General → Danger Zone → Change visibility).
 
 ## Using the dashboard
 
@@ -271,17 +331,11 @@ carefully.
 
 ## Running it all the time
 
-Trades and alerts only happen while the app is running. Exit rules are checked by the app,
-not held at Robinhood, so **if the app is down, stop-losses don't fire**. Run it on an
-always-on machine:
-
-- **Docker** (any small cloud server or home machine): `docker compose up -d`. Data and the
-  Robinhood login live in `./data`. The port is bound to 127.0.0.1 only.
-- **systemd**: see `deploy/signal-desk.service`.
-- **Reaching it remotely**: use Tailscale, or an SSH tunnel
-  (`ssh -L 8000:127.0.0.1:8000 you@server`, then open http://127.0.0.1:8000). The tunnel
-  also makes the Robinhood login redirect work on a headless server. Don't open the port to
-  the internet.
+Trades, alerts and deposit handling only happen while the site is running, and exit rules are
+checked by the site rather than held at Robinhood. So **if it's down, stop-losses don't fire**.
+Hosting it (see *Put it online*) solves this. `docker compose` restarts it automatically after
+crashes and server reboots, Docker checks `/healthz` every minute, and an outside uptime
+monitor tells you if the whole server goes away.
 
 ## Configuration
 
