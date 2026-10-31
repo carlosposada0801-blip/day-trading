@@ -1,9 +1,3 @@
-__pycache__/
-*.pyc
-.pytest_cache/
-.venv/
-*.db
-.env
-robinhood_tokens.json
-data/
-signal-desk.lock
+.DS_Store
+node_modules/
+*.log

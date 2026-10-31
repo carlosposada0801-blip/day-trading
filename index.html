@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Margin">
+  <meta name="theme-color" content="#f4ecdc">
+  <title>Margin — Bible Study</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header id="bar">
+    <div class="group nav">
+      <button id="prev" class="icon" title="Previous chapter" aria-label="Previous chapter">‹</button>
+      <select id="book" aria-label="Book"></select>
+      <select id="chapter" aria-label="Chapter"></select>
+      <button id="next" class="icon" title="Next chapter" aria-label="Next chapter">›</button>
+    </div>
+
+    <div class="group seg" id="translations" role="radiogroup" aria-label="Translation"></div>
+
+    <div class="group seg" id="tools" role="radiogroup" aria-label="Tool">
+      <button data-tool="read" title="Read / scroll">✋<span>Read</span></button>
+      <button data-tool="pen" title="Pen">✒️<span>Pen</span></button>
+      <button data-tool="hl" title="Highlighter">🖍️<span>Highlight</span></button>
+      <button data-tool="erase" title="Eraser">🧽<span>Erase</span></button>
+    </div>
+
+    <div class="group" id="swatches" aria-label="Colors"></div>
+
+    <div class="group">
+      <input id="size" type="range" min="1" max="10" step="1" value="3" aria-label="Size" title="Size">
+    </div>
+
+    <div class="group">
+      <button id="undo" class="icon" title="Undo" aria-label="Undo">↶</button>
+      <button id="redo" class="icon" title="Redo" aria-label="Redo">↷</button>
+      <button id="menuBtn" class="icon" title="More" aria-label="More">⋯</button>
+    </div>
+  </header>
+
+  <div id="menu" hidden>
+    <label class="check"><input type="checkbox" id="pencilOnly" checked> Only Apple Pencil draws<br><small>Fingers scroll, and your palm won't leave marks</small></label>
+    <button id="addSpace">➕ Add writing space to this page</button>
+    <button id="clearPage">🗑️ Clear my notes on this page</button>
+    <hr>
+    <button id="exportBtn">⬇️ Back up all notes</button>
+    <label class="filebtn">⬆️ Restore from backup<input type="file" id="importFile" accept="application/json"></label>
+    <hr>
+    <p class="fine">Notes are saved on this device. Back them up now and then.</p>
+  </div>
+
+  <main id="stage">
+    <div id="pageWrap">
+      <div id="page">
+        <div class="page-head">
+          <h1 id="title"></h1>
+          <span id="trName"></span>
+        </div>
+        <div class="cols">
+          <article id="text"></article>
+          <aside id="margin" aria-label="Notes margin"></aside>
+        </div>
+        <div id="space"></div>
+        <div id="ink"></div>
+      </div>
+    </div>
+    <div id="status" hidden></div>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

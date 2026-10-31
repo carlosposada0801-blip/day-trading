@@ -1,0 +1,214 @@
+[hidden] { display: none !important; }
+
+:root {
+  --paper: #fbf6ea;
+  --desk: #e9e1cf;
+  --ink: #2b2620;
+  --muted: #8a7f6c;
+  --rule: rgba(120, 140, 170, 0.22);
+  --accent: #7a3b2e;
+  --bar: rgba(251, 246, 234, 0.94);
+  --page-w: 1000px;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--desk);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ---------- toolbar ---------- */
+#bar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  padding: calc(8px + env(safe-area-inset-top)) 12px 8px;
+  background: var(--bar);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  -webkit-user-select: none;
+  user-select: none;
+}
+.group { display: flex; align-items: center; gap: 6px; }
+
+button, select {
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 10px;
+  min-height: 40px;
+  padding: 0 12px;
+  touch-action: manipulation;
+}
+select { padding-right: 6px; }
+button.icon { min-width: 40px; padding: 0; font-size: 22px; line-height: 1; }
+button:disabled { opacity: 0.35; }
+
+.seg { background: rgba(0, 0, 0, 0.06); border-radius: 12px; padding: 3px; gap: 2px; }
+.seg button { border: none; background: transparent; min-height: 36px; padding: 0 10px; }
+.seg button.on { background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); font-weight: 600; }
+#tools button span { margin-left: 4px; font-size: 13px; }
+
+#swatches button {
+  width: 30px; min-width: 30px; height: 30px; min-height: 30px;
+  padding: 0; border-radius: 50%;
+  border: 2px solid rgba(0, 0, 0, 0.12);
+}
+#swatches button.on { outline: 3px solid var(--accent); outline-offset: 2px; }
+#size { width: 110px; accent-color: var(--accent); }
+
+@media (max-width: 900px) {
+  #tools button span { display: none; }
+}
+
+/* ---------- menu ---------- */
+#menu {
+  position: fixed;
+  z-index: 20;
+  right: 12px;
+  top: calc(64px + env(safe-area-inset-top));
+  width: 300px;
+  padding: 14px;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+#menu[hidden] { display: none; }
+#menu button, .filebtn { text-align: left; width: 100%; }
+.filebtn {
+  display: flex; align-items: center; min-height: 40px; padding: 0 12px;
+  border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 10px; font-size: 15px; cursor: pointer;
+}
+.filebtn input { display: none; }
+.check { font-size: 15px; line-height: 1.4; }
+.check small, .fine { color: var(--muted); font-size: 13px; }
+#menu hr { width: 100%; border: none; border-top: 1px solid #eee; margin: 4px 0; }
+
+/* ---------- the page ---------- */
+#stage { padding: 20px 0 60px; }
+#pageWrap { position: relative; margin: 0 auto; }
+
+#page {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: var(--page-w);
+  transform-origin: 0 0;
+  background: var(--paper);
+  box-shadow: 0 2px 18px rgba(60, 40, 10, 0.18);
+  border-radius: 4px;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.page-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 36px 48px 6px;
+  border-bottom: 1px solid rgba(122, 59, 46, 0.25);
+  margin: 0 0 0;
+}
+.page-head h1 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino", Georgia, serif;
+  font-weight: 600;
+  font-size: 34px;
+  color: var(--accent);
+  letter-spacing: 0.01em;
+}
+#trName { color: var(--muted); font-size: 14px; letter-spacing: 0.08em; text-transform: uppercase; }
+
+.cols { display: grid; grid-template-columns: 600px 1fr; }
+
+#text {
+  padding: 22px 30px 40px 48px;
+  font-family: "Iowan Old Style", "Palatino", Georgia, serif;
+  font-size: 21px;
+  /* Generous line spacing leaves room to underline and write between lines. */
+  line-height: 2.05;
+  text-align: left;
+  hyphens: manual;
+}
+#text p { margin: 0; }
+#text sup {
+  font-family: -apple-system, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--accent);
+  vertical-align: 0.65em;
+  line-height: 0;
+  margin: 0 3px 0 4px;
+}
+#text .ch {
+  float: left;
+  font-size: 64px;
+  line-height: 0.95;
+  margin: 8px 10px 0 0;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Ruled notes margin, like a wide-margin journaling Bible. */
+#margin {
+  border-left: 1px solid rgba(122, 59, 46, 0.18);
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 42px, var(--rule) 42px, var(--rule) 43px);
+  background-position: 0 22px;
+}
+
+#space {
+  border-top: 1px dashed rgba(122, 59, 46, 0.2);
+  background-image: repeating-linear-gradient(to bottom, transparent 0, transparent 42px, var(--rule) 42px, var(--rule) 43px);
+}
+
+/* Ink sits on top of everything; multiply lets the text show through highlights. */
+#ink {
+  position: absolute;
+  inset: 0 0 auto 0;
+  mix-blend-mode: multiply;
+  pointer-events: none;
+  touch-action: pan-y pinch-zoom;
+}
+body.drawing #ink { pointer-events: auto; }
+body.drawing.anyInput #ink { touch-action: none; }
+body.drawing #ink { cursor: crosshair; }
+body.erasing #ink { cursor: cell; }
+
+#status {
+  position: fixed;
+  left: 50%;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  background: rgba(43, 38, 32, 0.92);
+  color: #fff;
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 15px;
+  max-width: 90vw;
+  z-index: 30;
+}
+#status button { margin-left: 10px; min-height: 32px; }
+
+.loading, .error {
+  color: var(--muted);
+  font-family: -apple-system, sans-serif;
+  font-size: 17px;
+  line-height: 1.5;
+}
+.error button { margin-top: 12px; }
