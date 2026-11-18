@@ -76,3 +76,7 @@ test("friendly duration", () => {
   assert.equal(S.fmtDuration(D), "1 day");
   assert.equal(S.fmtDuration(14 * D + 5), "14 days");
 });
+
+test("every medal explains itself", () => {
+  for (const m of S.MILESTONES) assert.ok(m.about && m.about.length > 20, `${m.name} needs an explanation`);
+});

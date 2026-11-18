@@ -150,6 +150,7 @@ function renderDetail() {
       ${ring(230, 12, n ? n.progress : 1, `<b class="num" data-days="${esc(t.id)}">${p.days}</b><span>${p.days === 1 ? "day" : "days"} free</span>`)}
       <div class="hero-clock num" data-clock="${esc(t.id)}">${pad(p.hours)}h ${pad(p.minutes)}m ${pad(p.seconds)}s</div>
       <div class="hero-next" data-next="${esc(t.id)}">${esc(nextText(ms))}</div>
+      <p class="explain" style="margin:10px 0 0">The ring fills as you get closer to your next medal.</p>
     </div>
     <div class="section row">
       <button class="btn primary" id="urge-btn">I'm struggling</button>
@@ -159,24 +160,28 @@ function renderDetail() {
       <div class="panel">${t.why ? `<div class="why">${esc(t.why)}</div>` : `<div class="why-empty">Add your reason. You'll see it when it's hard.</div>`}</div></div>
 
     <div class="section"><h3>Stats</h3><div class="stats">
-      <div class="stat"><b class="num">${S.fmtDuration(ms)}</b><span>Current streak</span></div>
-      <div class="stat"><b class="num">${S.fmtDuration(best)}</b><span>Best streak</span></div>
-      <div class="stat"><b class="num">${S.fmtDuration(S.totalMs(t, t0))}</b><span>Total time free</span></div>
-      <div class="stat"><b class="num">${t.urges || 0}</b><span>Urges beaten</span></div>
+      <div class="stat"><b class="num">${S.fmtDuration(ms)}</b><span>Current streak</span><em>Since your last reset.</em></div>
+      <div class="stat"><b class="num">${S.fmtDuration(best)}</b><span>Best streak</span><em>Your longest run ever. A slip never lowers it.</em></div>
+      <div class="stat"><b class="num">${S.fmtDuration(S.totalMs(t, t0))}</b><span>Total time free</span><em>Every streak added together.</em></div>
+      <div class="stat"><b class="num">${t.urges || 0}</b><span>Urges beaten</span><em>Times you tapped "I'm struggling" and made it through.</em></div>
     </div></div>
 
-    <div class="section"><h3>Medals</h3><div class="trophies">
+    <div class="section"><h3>Medals</h3>
+      <p class="explain">Each medal unlocks when your current streak reaches it. Medals you earned on an earlier streak stay in your case. Tap one to see what it means.</p>
+      <div class="trophies">
       ${S.MILESTONES.map((m) => {
         const got = ms >= m.days * S.DAY, everGot = bestMs.includes(m.days), isNext = n && n.milestone.days === m.days;
         const reward = t.rewards?.[m.days];
         const sub = got ? "Earned" : isNext ? `in ${S.fmtDuration(m.days * S.DAY - ms)}` : everGot ? "Earned before" : plural(m.days, "day");
-        return `<div class="trophy ${got || everGot ? "" : "locked"} ${isNext ? "current" : ""}">
+        return `<button class="trophy ${got || everGot ? "" : "locked"} ${isNext ? "current" : ""}" data-medal="${m.days}" data-status="${esc(sub)}">
           ${medal(m, !(got || everGot))}<div class="t-name">${esc(m.name)}</div><div class="t-sub">${esc(sub)}</div>
-          ${reward ? `<div class="t-reward">🎁 ${esc(reward)}</div>` : ""}</div>`;
+          ${reward ? `<div class="t-reward">🎁 ${esc(reward)}</div>` : ""}</button>`;
       }).join("")}
     </div></div>
 
-    <div class="section"><h3>History</h3><div class="panel">
+    <div class="section"><h3>History</h3>
+      <p class="explain">Every streak you've had. A reset ends the current one here, along with any note you left.</p>
+      <div class="panel">
       <ul class="history">
         <li><div><b>Current</b><div class="h-note">since ${fmtDate(t.startedAt)}</div></div><div class="num">${S.fmtDuration(ms)}</div></li>
         ${[...(t.history || [])].reverse().map((r) => `<li><div>${fmtDate(r.start)} → ${fmtDate(r.end)}${r.note ? `<div class="h-note">${esc(r.note)}</div>` : ""}</div>
@@ -193,6 +198,23 @@ function renderDetail() {
   $("#edit-tracker").addEventListener("click", () => openEditor(t.id));
   $("#urge-btn").addEventListener("click", () => openUrge(t.id));
   $("#reset-open").addEventListener("click", () => showResetConfirm(t));
+  el.querySelectorAll("[data-medal]").forEach((b) => b.addEventListener("click", () =>
+    showMedalInfo(t, S.MILESTONES.find((m) => m.days === +b.dataset.medal), b.dataset.status, b.classList.contains("locked"))));
+}
+
+function showMedalInfo(t, m, status, locked) {
+  const reward = t.rewards?.[m.days];
+  $("#medal-info-card").innerHTML = `${medal(m, locked, "medal")}
+    <h2>${esc(m.name)}</h2>
+    <div class="status">${esc(plural(m.days, "day"))} · ${esc(locked && status === plural(m.days, "day") ? "Locked" : status)}</div>
+    <p class="about">${locked ? "<b>When you get here:</b> " : ""}${esc(m.about)}</p>
+    ${reward ? `<div class="reward">🎁 Your reward: <b>${esc(reward)}</b></div>` : `<p class="hint">Tip: set a reward for this medal with ✎ Edit.</p>`}
+    <button class="btn" id="medal-info-ok">Close</button>`;
+  $("#medal-info").hidden = false;
+  $("#medal-info-ok").focus();
+  const close = () => { $("#medal-info").hidden = true; };
+  $("#medal-info-ok").addEventListener("click", close);
+  $("#medal-info").onclick = (e) => { if (e.target.id === "medal-info") close(); };
 }
 
 function showResetConfirm(t) {
@@ -305,7 +327,7 @@ function openUrge(id) {
     <div class="sheet-top"><button class="icon-btn back" data-close aria-label="Close">‹</button><h2>Ride it out</h2><span class="icon-btn"></span></div>
     <div class="breathe"><div class="orb" id="orb"></div><div class="phase" id="phase">Breathe in</div></div>
     <div class="urge-timer num" id="urge-left">1:30</div>
-    <p class="urge-copy">Urges rise, peak and pass, usually within minutes. Breathe with the circle. You don't have to act on it.</p>
+    <p class="urge-copy">Urges rise, peak and pass, often within 15–30 minutes. Breathe with the circle: slow breathing, with a longer breath out, calms your body down so the urge loses its grip. You don't have to act on it.</p>
     ${t.why ? `<div class="panel"><div class="hint" style="margin:0 0 6px">Your reason</div><div class="why">${esc(t.why)}</div></div>` : ""}
     ${verseHtml()}
     <div class="urge-actions">
@@ -360,6 +382,19 @@ function renderSettings() {
       <input type="file" id="s-file" accept="application/json,.json" hidden>
       <button class="btn ghost danger" id="s-wipe" style="margin-top:10px">Erase everything</button>
     </div></div>
+    <div class="section"><h3>Help</h3><div class="panel">
+      <button class="btn" id="s-howto">How Streaks works</button>
+      <div class="faq" style="margin-top:8px">
+        <details><summary>What counts as a streak?</summary><p>The time since you last did the thing you're quitting. It counts up on its own, every second, even while the app is closed.</p></details>
+        <details><summary>What happens if I slip?</summary><p>Open the streak and tap “I slipped: reset to zero”. The clock starts over, but your best streak, every medal you've earned and your history all stay. You can add a private note about what happened to spot patterns later.</p></details>
+        <details><summary>How do medals and rewards work?</summary><p>Medals unlock at 1, 3 and 7 days, 2 weeks, 1, 2, 3 and 6 months, then 1, 2, 3, 5 and 10 years. When you reach one, you get a celebration. Set your own reward for any medal (✎ Edit on a streak) and it shows on the medal and in the celebration.</p></details>
+        <details><summary>What does “I'm struggling” do?</summary><p>It guides you through 90 seconds of slow breathing and shows your reason for quitting. If you get through the urge, tap “I made it through” and it's counted under Urges beaten.</p></details>
+        <details><summary>Will it remind me or notify me?</summary><p>Not while it's closed. It's a website saved to your home screen, so it can't send notifications. Celebrations show up the next time you open it.</p></details>
+        <details><summary>Where is my data? Is it private?</summary><p>Only on this phone, in this browser. Nothing is uploaded and there's no account. Turn on the PIN lock to keep others out. Clearing your browser data or deleting the app from your home screen erases it, so save a backup now and then.</p></details>
+        <details><summary>How do I move to a new phone?</summary><p>Tap Save backup here, send the file to yourself, then open Streaks on the new phone and tap Restore backup.</p></details>
+        <details><summary>Can I fix the start date?</summary><p>Yes. Open the streak, tap ✎ and change “Streak started”. It only changes the current streak.</p></details>
+      </div>
+    </div></div>
     <p class="hint" style="text-align:center;margin-top:24px">Tip: add this page to your home screen to use it like an app, offline too.</p>
   </div>`;
   el.querySelector("[data-close]").addEventListener("click", closeSheet);
@@ -376,6 +411,7 @@ function renderSettings() {
       setPin();
     }
   });
+  $("#s-howto").addEventListener("click", () => showWelcome());
   $("#s-export").addEventListener("click", exportBackup);
   $("#s-import").addEventListener("click", () => $("#s-file").click());
   $("#s-file").addEventListener("change", importBackup);
@@ -497,6 +533,7 @@ function celebrate({ t, m }) {
   $("#celebrate-card").innerHTML = `${medal(m, false, "medal")}
     <h2>${esc(m.name)}!</h2>
     <p>${esc(t.emoji)} ${esc(t.name)}: ${plural(m.days, "day")} free.</p>
+    <p style="color:var(--text);margin:12px 0">${esc(m.about)}</p>
     ${reward ? `<div class="reward">🎁 You promised yourself: <b>${esc(reward)}</b>. Go get it.</div>` : ""}
     ${verseHtml()}
     ${n ? `<p class="hint">Next medal: ${esc(n.name)}</p>` : ""}
@@ -533,6 +570,49 @@ function confetti() {
   requestAnimationFrame(frame);
 }
 
+// ---------- welcome walkthrough ----------
+function showWelcome() {
+  const slides = [
+    { art: ring(120, 10, 0.62, `<b class="num" style="font-size:30px">12</b><span>days</span>`),
+      title: "Count your free days",
+      body: `<p>Add what you're quitting: porn, social media, anything. A clock counts every day, hour and second since the last time.</p>
+             <p>Started a while ago? You can set an earlier start date.</p>` },
+    { art: S.MILESTONES.filter((m) => [1, 7, 30, 90, 365].includes(m.days)).map((m) => medal(m)).join(""),
+      title: "Earn medals",
+      body: `<p>Medals unlock at 1, 3 and 7 days, 2 weeks, 1, 2, 3 and 6 months, and on up to 10 years. Each one comes with a celebration and a note on why it matters.</p>
+             <p>Promise yourself a reward for any medal and it shows up when you earn it.</p>` },
+    { art: `<div class="breathe" style="width:120px;height:120px;margin:0"><div class="orb in"></div></div>`,
+      title: "When it gets hard",
+      body: `<ul><li><b>I'm struggling:</b> a 90-second breathing guide, your reason for quitting${state.settings.scripture ? " and a Bible verse" : ""}. Urges pass.</li>
+             <li><b>If you slip:</b> reset and start again. Your best streak, medals and history all stay. A slip isn't the end.</li></ul>` },
+    { art: `<svg viewBox="0 0 64 64" aria-hidden="true"><rect x="14" y="28" width="36" height="28" rx="6" fill="#8b6cff"/><path d="M22 28v-8a10 10 0 0 1 20 0v8" fill="none" stroke="#3fd0ff" stroke-width="5"/></svg>`,
+      title: "Private to you",
+      body: `<ul><li>Everything stays <b>on this phone</b>. No account, nothing uploaded.</li>
+             <li>Add a <b>PIN lock</b> in Settings to keep others out.</li>
+             <li>Save a <b>backup</b> now and then so you never lose your streaks.</li>
+             <li>Add Streaks to your <b>home screen</b> to use it like an app.</li></ul>` },
+  ];
+  let i = 0;
+  const el = $("#welcome");
+  const draw = () => {
+    const sl = slides[i], last = i === slides.length - 1;
+    el.innerHTML = `<div class="welcome-inner">
+      <button class="welcome-skip" id="w-skip">${last ? "" : "Skip"}</button>
+      <div class="slide" aria-live="polite"><div class="art">${sl.art}</div><h2>${sl.title}</h2>${sl.body}</div>
+      <div class="dots" aria-hidden="true">${slides.map((_, k) => `<i class="${k === i ? "on" : ""}"></i>`).join("")}</div>
+      <div class="row">${i ? `<button class="btn" id="w-back">Back</button>` : ""}
+        <button class="btn primary" id="w-next">${last ? "Let's go" : "Next"}</button></div>
+    </div>`;
+    $("#w-next").addEventListener("click", () => (last ? done() : (i++, draw())));
+    $("#w-back")?.addEventListener("click", () => { i--; draw(); });
+    $("#w-skip").addEventListener("click", done);
+    $("#w-next").focus();
+  };
+  const done = () => { el.hidden = true; state.settings.onboarded = true; save(); };
+  el.hidden = false;
+  draw();
+}
+
 // ---------- sheets & back button ----------
 const stack = [];
 function openSheet(el) {
@@ -560,7 +640,11 @@ addEventListener("popstate", () => {
   if (ignorePops) { ignorePops--; return; }
   hideTop();
 });
-addEventListener("keydown", (e) => { if (e.key === "Escape" && stack.length && $("#celebrate").hidden) closeSheet(); });
+addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("#medal-info").hidden) { $("#medal-info").hidden = true; return; }
+  if (stack.length && $("#celebrate").hidden) closeSheet();
+});
 
 function openDetail(id) { detailId = id; renderDetail(); openSheet($("#detail")); }
 $("#add").addEventListener("click", () => openEditor(null));
@@ -593,6 +677,7 @@ function tick() {
 
 // ---------- start ----------
 renderList();
+if (!state.settings.onboarded && !state.trackers.length) showWelcome();
 if (state.settings.pinHash) showLock("unlock");
 tick();
 setInterval(tick, 1000);

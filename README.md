@@ -21,6 +21,11 @@ Earn medals as you go, with a black theme.
 - **Several streaks at once**, each with its own icon, start date (you can enter one that
   began earlier) and "why".
 - **Scripture encouragement** (KJV), on by default. Turn it off in Settings.
+- **Explained as you go:**
+  - A short welcome walkthrough the first time you open it.
+  - Tap any medal to see what that milestone means.
+  - Each stat says what it counts.
+  - Settings has a "How Streaks works" guide and answers to common questions.
 
 ## Private by design
 

@@ -199,3 +199,38 @@ details > summary::-webkit-details-marker { display: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---- explanations ---- */
+.trophy { cursor: pointer; font: inherit; color: inherit; }
+.trophy:active { transform: scale(.97); }
+.info-card { background: var(--card); border: 1px solid var(--line); border-radius: 22px; padding: 24px 20px; width: 100%; }
+.info-card svg.medal { width: 96px; height: 96px; filter: none; }
+.info-card h2 { font-size: 24px; margin-top: 8px; }
+.info-card .about { color: var(--text); font-size: 16px; line-height: 1.5; margin: 10px 0 6px; }
+.info-card .status { font-size: 13px; color: var(--muted); }
+.explain { font-size: 13px; color: var(--muted); margin: -4px 0 12px; line-height: 1.45; }
+.stat em { display: block; font-style: normal; font-size: 11px; color: var(--muted); opacity: .8; margin-top: 4px; line-height: 1.35; }
+
+.welcome { position: fixed; inset: 0; z-index: 50; background: var(--bg); display: flex; flex-direction: column; }
+.welcome-inner { max-width: 480px; width: 100%; margin: 0 auto; flex: 1; display: flex; flex-direction: column;
+                 padding: calc(var(--safe-t) + 20px) 24px calc(var(--safe-b) + 24px); }
+.welcome-skip { align-self: flex-end; color: var(--muted); padding: 8px; }
+.slide { flex: 1; display: flex; flex-direction: column; justify-content: center; text-align: center; animation: up .3s ease; }
+.slide .art { display: flex; justify-content: center; gap: 8px; margin-bottom: 28px; min-height: 120px; align-items: center; }
+.slide .art svg { width: 64px; height: 64px; }
+.slide .art .ring-wrap { margin: 0 auto; }
+.slide h2 { font-size: 28px; letter-spacing: -.02em; margin: 0 0 12px; }
+.slide p { color: var(--muted); font-size: 17px; line-height: 1.5; margin: 0 0 10px; }
+.slide ul { text-align: left; color: var(--muted); font-size: 16px; line-height: 1.5; padding-left: 20px; margin: 6px auto 0; max-width: 360px; }
+.slide li { margin: 6px 0; }
+.slide li b { color: var(--text); }
+.dots { display: flex; gap: 8px; justify-content: center; margin: 18px 0; }
+.dots i { width: 8px; height: 8px; border-radius: 50%; background: var(--line); transition: .2s; }
+.dots i.on { background: var(--text); width: 22px; border-radius: 4px; }
+
+.faq details { border-bottom: 1px solid var(--line); padding: 4px 0; }
+.faq details:last-child { border-bottom: 0; }
+.faq summary { color: var(--text); font-weight: 600; padding: 12px 0; }
+.faq summary::after { content: "+"; float: right; color: var(--muted); font-weight: 400; }
+.faq details[open] summary::after { content: "–"; }
+.faq p { color: var(--muted); font-size: 14px; margin: 0 0 12px; line-height: 1.5; }
