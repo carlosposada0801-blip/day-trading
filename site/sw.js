@@ -1,5 +1,5 @@
 // Offline support: the whole app is cached on first visit and served from the cache after.
-const CACHE = "streaks-v1";
+const CACHE = "streaks-v2";
 const FILES = ["./", "index.html", "app.css", "app.js", "streak.js", "manifest.webmanifest",
                "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/apple-touch-icon.png"];
 

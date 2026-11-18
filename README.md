@@ -21,6 +21,24 @@ Earn medals as you go, with a black theme.
 - **Several streaks at once**, each with its own icon, start date (you can enter one that
   began earlier) and "why".
 - **Scripture encouragement** (KJV), on by default. Turn it off in Settings.
+- **Daily check-in:** commit to the day each morning and rate it each evening, with a
+  running check-in streak.
+- **Verse of the day** on the home screen (when scripture is on).
+- **Patterns:** shows when you tend to slip or get urges (time of day, day of the week) and
+  which words keep coming up in your reset notes, plus your average streak to beat.
+- **Urge plan:** write your steps ahead of time ("phone in another room", "go for a walk");
+  they show as a checklist on the "I'm struggling" screen.
+- **Accountability partner:** save a friend's number to get "Text" and "Call" buttons on the
+  struggling screen and a "Tell them" button when you earn a medal.
+- **Share:** makes an image of your streak or medal. Shares are worded privately by default
+  ("14 days on my streak"); turn that off in Settings to name the habit.
+- **Time and money back:** enter how much time or money it used to take each day to see
+  what you've gotten back.
+- **Reminders through your calendar:** Settings makes calendar events for your morning and
+  evening check-ins and for upcoming medal days. Your phone's calendar sends the alerts,
+  and titles are discreet.
+- **Blocker guide:** step-by-step setup of the phone's own content filters and app limits
+  (Screen Time on iPhone; Private DNS and Digital Wellbeing on Android).
 - **Explained as you go:**
   - A short welcome walkthrough the first time you open it.
   - Tap any medal to see what that milestone means.
@@ -34,6 +52,12 @@ Earn medals as you go, with a black theme.
 - **PIN lock:** optional, asked when the app opens or after a minute away.
 - **Backups:** save one from Settings now and then, and restore it on a new phone. Clearing
   your browser data erases your streaks.
+
+## What it can't do (yet)
+
+It's a website you add to your home screen, so it can't send push notifications on its own
+or show a home-screen widget. The calendar reminders cover the first. A widget needs an App
+Store / Play Store version of the app.
 
 ## Use it on your phone
 

@@ -2,15 +2,17 @@ import * as S from "./streak.js";
 
 // ---------- storage (this device only) ----------
 const KEY = "streaks.v1";
+const DEFAULT_SETTINGS = { scripture: true, checkin: true, hideName: true, partner: null, morning: "08:00", evening: "21:00" };
+const fresh = () => ({ trackers: [], checkins: {}, settings: { ...DEFAULT_SETTINGS } });
 const load = () => {
   try {
     const raw = localStorage.getItem(KEY);
     if (raw) {
       const d = JSON.parse(raw);
-      return { trackers: d.trackers ?? [], settings: { scripture: true, ...d.settings } };
+      return { trackers: d.trackers ?? [], checkins: d.checkins ?? {}, settings: { ...DEFAULT_SETTINGS, ...d.settings } };
     }
   } catch { /* storage blocked or corrupt: start fresh */ }
-  return { trackers: [], settings: { scripture: true } };
+  return fresh();
 };
 let state = load();
 function save() {
@@ -34,7 +36,7 @@ function toast(msg) {
   t.textContent = msg;
   t.classList.add("show");
   clearTimeout(t._h);
-  t._h = setTimeout(() => t.classList.remove("show"), 2800);
+  t._h = setTimeout(() => t.classList.remove("show"), Math.max(2800, msg.length * 60));
 }
 
 // Scripture encouragement (KJV, public domain). Shown when the setting is on.
@@ -119,7 +121,7 @@ function renderList() {
   }
   $("#add").hidden = false;
   const t0 = now();
-  list.innerHTML = state.trackers.map((t) => {
+  list.innerHTML = checkinCard() + verseCard() + state.trackers.map((t) => {
     const ms = S.streakMs(t, t0), p = S.parts(ms), n = S.next(ms);
     const earned = S.reached(ms);
     return `<button class="card" data-open="${esc(t.id)}" aria-label="${esc(t.name)}: ${plural(p.days, "day")}">
@@ -132,6 +134,59 @@ function renderList() {
     </button>`;
   }).join("");
   list.querySelectorAll("[data-open]").forEach((b) => b.addEventListener("click", () => openDetail(b.dataset.open)));
+  wireCheckin();
+}
+
+// ---------- daily check-in ----------
+function checkinCard() {
+  if (!state.settings.checkin) return "";
+  const t0 = now(), key = S.dayKey(t0), c = state.checkins[key], hour = new Date(t0).getHours();
+  const streak = S.checkinStreak(state.checkins, t0);
+  const streakText = streak ? `<span class="ci-streak">🔥 ${plural(streak, "day")} of check-ins</span>` : "";
+  if (hour >= 17 && (c?.mood ?? null) === null) {
+    return `<div class="checkin panel" id="checkin"><div class="ci-head"><b>How did today go?</b>${streakText}</div>
+      <div class="moods" role="group" aria-label="Today's mood">${S.MOODS.map((m, i) =>
+        `<button class="mood" data-mood="${i}" aria-label="Mood ${i + 1} of 5" aria-pressed="false">${m}</button>`).join("")}</div>
+      <textarea id="ci-note" maxlength="300" placeholder="Anything worth remembering? (optional)" rows="2"></textarea>
+      <button class="btn primary" id="ci-save" disabled>Check in</button></div>`;
+  }
+  if (!c?.committed && hour < 17) {
+    return `<div class="checkin panel" id="checkin"><div class="ci-head"><b>${hour < 12 ? "Good morning." : "New day, fresh start."}</b>${streakText}</div>
+      <p class="hint" style="margin:4px 0 12px">Decide now, before the day decides for you.</p>
+      <button class="btn primary" id="ci-commit">I commit to today</button></div>`;
+  }
+  const done = c?.mood != null ? `Checked in tonight ${S.MOODS[c.mood]}` : "Committed to today ✓";
+  const later = c?.mood == null && hour < 17 ? " · Check in again tonight" : "";
+  return `<div class="checkin panel compact"><span>${esc(done)}${later}</span>${streakText}</div>`;
+}
+
+function wireCheckin() {
+  const key = S.dayKey(now());
+  $("#ci-commit")?.addEventListener("click", () => {
+    state.checkins[key] = { ...state.checkins[key], committed: true };
+    save(); renderList();
+    toast("Committed. One day at a time.");
+  });
+  let mood = null;
+  document.querySelectorAll("[data-mood]").forEach((b) => b.addEventListener("click", () => {
+    mood = +b.dataset.mood;
+    document.querySelectorAll("[data-mood]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    $("#ci-save").disabled = false;
+  }));
+  $("#ci-save")?.addEventListener("click", () => {
+    if (mood === null) return;
+    state.checkins[key] = { ...state.checkins[key], mood, note: $("#ci-note").value.trim().slice(0, 300) };
+    save(); renderList();
+    toast(mood <= 1
+      ? `Rough day. Tomorrow's new.${state.settings.partner?.name ? ` Maybe text ${state.settings.partner.name}?` : ""}`
+      : "Checked in. Rest well.");
+  });
+}
+
+function verseCard() {
+  if (!state.settings.scripture) return "";
+  const [text, ref] = S.verseOfDay(VERSES, now());
+  return `<div class="votd"><div class="votd-label">Verse of the day</div>“${esc(text)}”<cite>${esc(ref)} (KJV)</cite></div>`;
 }
 
 // ---------- detail ----------
@@ -154,6 +209,7 @@ function renderDetail() {
     </div>
     <div class="section row">
       <button class="btn primary" id="urge-btn">I'm struggling</button>
+      <button class="btn" id="share-btn" style="flex:.55">Share</button>
     </div>
 
     <div class="section"><h3>Why I'm doing this</h3>
@@ -164,7 +220,10 @@ function renderDetail() {
       <div class="stat"><b class="num">${S.fmtDuration(best)}</b><span>Best streak</span><em>Your longest run ever. A slip never lowers it.</em></div>
       <div class="stat"><b class="num">${S.fmtDuration(S.totalMs(t, t0))}</b><span>Total time free</span><em>Every streak added together.</em></div>
       <div class="stat"><b class="num">${t.urges || 0}</b><span>Urges beaten</span><em>Times you tapped "I'm struggling" and made it through.</em></div>
+      ${savedStats(t, t0)}
     </div></div>
+
+    ${patternsSection(t, t0)}
 
     <div class="section"><h3>Medals</h3>
       <p class="explain">Each medal unlocks when your current streak reaches it. Medals you earned on an earlier streak stay in your case. Tap one to see what it means.</p>
@@ -197,9 +256,35 @@ function renderDetail() {
   el.querySelector("[data-close]").addEventListener("click", closeSheet);
   $("#edit-tracker").addEventListener("click", () => openEditor(t.id));
   $("#urge-btn").addEventListener("click", () => openUrge(t.id));
+  $("#share-btn").addEventListener("click", () => shareProgress(t));
   $("#reset-open").addEventListener("click", () => showResetConfirm(t));
   el.querySelectorAll("[data-medal]").forEach((b) => b.addEventListener("click", () =>
     showMedalInfo(t, S.MILESTONES.find((m) => m.days === +b.dataset.medal), b.dataset.status, b.classList.contains("locked"))));
+}
+
+function savedStats(t, t0) {
+  const sv = S.saved(t, t0);
+  const out = [];
+  if (sv.minutes != null) out.push(`<div class="stat"><b class="num">${S.fmtMinutes(sv.minutes)}</b><span>Time back</span><em>At ${t.perDayMinutes} min a day it used to take.</em></div>`);
+  if (sv.money != null) out.push(`<div class="stat"><b class="num">$${Math.round(sv.money).toLocaleString()}</b><span>Money kept</span><em>At $${t.perDayMoney} a day it used to cost.</em></div>`);
+  return out.join("");
+}
+
+function patternsSection(t, t0) {
+  const p = S.patterns(t, t0);
+  const items = [];
+  if (p.slipTime) items.push(`<li>🕒 Slips happen most <b>${esc(p.slipTime.label)}</b> (${p.slipTime.count} of ${p.slipTime.of}).</li>`);
+  if (p.slipDay) items.push(`<li>📅 <b>${esc(p.slipDay.day)}s</b> are the hardest day (${p.slipDay.count} of ${p.slipDay.of} slips).</li>`);
+  if (p.triggers.length) items.push(`<li>📝 Your notes keep mentioning ${p.triggers.map((x) => `<b>${esc(x.word)}</b> (${x.count}×)`).join(", ")}.</li>`);
+  if (p.urgeTime) items.push(`<li>🌊 Urges hit most <b>${esc(p.urgeTime.label)}</b> (${p.urgeTime.count} of ${p.urgeTime.of}).</li>`);
+  if (p.averageStreakMs != null) items.push(`<li>📈 Your average streak is <b>${esc(S.fmtDuration(p.averageStreakMs))}</b>. ${p.beatingAverage ? "You're beating it right now." : "Beat it this time."}</li>`);
+  const hard = p.slipTime || p.urgeTime;
+  const tip = hard
+    ? `<p class="hint" style="margin:10px 0 0">Plan for that time: phone in another room, a set routine, or a new step in your urge plan (✎ Edit).</p>` : "";
+  return `<div class="section"><h3>Patterns</h3>
+    <p class="explain">Built from when you tap “I'm struggling” and when you reset, plus the notes you leave. Knowing your triggers is half the battle.</p>
+    <div class="panel">${items.length ? `<ul class="patterns">${items.join("")}</ul>${tip}`
+      : `<p class="hint" style="margin:0">Nothing yet. Patterns show up after a couple of urges or resets. Leaving a short note when you reset helps a lot.</p>`}</div></div>`;
 }
 
 function showMedalInfo(t, m, status, locked) {
@@ -260,6 +345,14 @@ function openEditor(id, preset = {}) {
            <input type="datetime-local" id="f-start" value="${toLocalInput(startedAt)}" max="${toLocalInput(now())}" hidden style="margin-top:10px"></div>`}
     <label class="field"><span>Why are you doing this?</span>
       <textarea id="f-why" maxlength="500" placeholder="Who you want to be. What you'll get back. You'll see this when it's hard.">${esc(t?.why ?? "")}</textarea></label>
+    <label class="field"><span>My plan when an urge hits (one step per line)</span>
+      <textarea id="f-plan" maxlength="900" rows="4" placeholder="Put the phone in another room&#10;Go for a 10-minute walk&#10;Text my accountability partner&#10;Do 20 push-ups">${esc((t?.plan ?? []).join("\n"))}</textarea></label>
+    <p class="hint">Shows on the “I'm struggling” screen, so you don't have to think in the moment.</p>
+    <div class="row">
+      <label class="field"><span>Minutes a day it took</span><input type="number" id="f-mins" min="0" max="1440" inputmode="numeric" value="${t?.perDayMinutes || ""}" placeholder="e.g. 90"></label>
+      <label class="field"><span>Dollars a day it cost</span><input type="number" id="f-money" min="0" step="0.01" inputmode="decimal" value="${t?.perDayMoney || ""}" placeholder="e.g. 0"></label>
+    </div>
+    <p class="hint">Optional. Shows how much time and money you've gotten back.</p>
     <details class="section" ${t && Object.keys(t.rewards || {}).length ? "open" : ""}><summary>🎁 Set rewards for milestones</summary>
       <p class="hint">Promise yourself something. It shows on the medal and when you earn it.</p>
       ${S.MILESTONES.slice(0, 9).map((m) => `<div class="reward-row"><span>${esc(m.name)}</span>
@@ -287,14 +380,19 @@ function openEditor(id, preset = {}) {
     if (!Number.isFinite(start) || start > now()) start = now();
     const rewards = {};
     el.querySelectorAll("[data-reward]").forEach((i) => { if (i.value.trim()) rewards[i.dataset.reward] = i.value.trim(); });
+    const extra = {
+      plan: $("#f-plan").value.split("\n").map((x) => x.trim()).filter(Boolean).slice(0, 12).map((x) => x.slice(0, 120)),
+      perDayMinutes: Math.min(1440, Math.max(0, Number($("#f-mins").value) || 0)),
+      perDayMoney: Math.max(0, Number($("#f-money").value) || 0),
+    };
     if (t) {
       const i = state.trackers.findIndex((x) => x.id === t.id);
-      let upd = { ...t, name, emoji: $("#f-emoji").value.trim() || "⭐", why: $("#f-why").value.trim(), rewards };
+      let upd = { ...t, name, emoji: $("#f-emoji").value.trim() || "⭐", why: $("#f-why").value.trim(), rewards, ...extra };
       if (start !== t.startedAt) upd = S.withPastCelebrated({ ...upd, startedAt: start, celebrated: [] }, now());
       state.trackers[i] = upd;
     } else {
       const tr = S.withPastCelebrated(S.newTracker({ name, emoji: $("#f-emoji").value.trim(), startedAt: start, why: $("#f-why").value.trim() }), now());
-      tr.rewards = rewards;
+      Object.assign(tr, { rewards }, extra);
       state.trackers.push(tr);
     }
     save();
@@ -328,7 +426,10 @@ function openUrge(id) {
     <div class="breathe"><div class="orb" id="orb"></div><div class="phase" id="phase">Breathe in</div></div>
     <div class="urge-timer num" id="urge-left">1:30</div>
     <p class="urge-copy">Urges rise, peak and pass, often within 15–30 minutes. Breathe with the circle: slow breathing, with a longer breath out, calms your body down so the urge loses its grip. You don't have to act on it.</p>
+    ${(t.plan || []).length ? `<div class="panel" style="margin-bottom:12px"><div class="hint" style="margin:0 0 8px">Your plan: tap each step as you do it</div>
+      <ul class="plan">${t.plan.map((x, k) => `<li><button class="plan-step" data-step="${k}" aria-pressed="false"><span class="box"></span>${esc(x)}</button></li>`).join("")}</ul></div>` : ""}
     ${t.why ? `<div class="panel"><div class="hint" style="margin:0 0 6px">Your reason</div><div class="why">${esc(t.why)}</div></div>` : ""}
+    ${partnerButtons("Hey, I'm having a hard moment right now. Can you talk?")}
     ${verseHtml()}
     <div class="urge-actions">
       <button class="btn primary" id="urge-won">I made it through</button>
@@ -336,9 +437,11 @@ function openUrge(id) {
     </div>
   </div>`;
   el.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", closeSheet));
+  el.querySelectorAll("[data-step]").forEach((b) => b.addEventListener("click", () =>
+    b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"))));
   $("#urge-won").addEventListener("click", () => {
     const i = state.trackers.findIndex((x) => x.id === id);
-    state.trackers[i] = { ...state.trackers[i], urges: (state.trackers[i].urges || 0) + 1 };
+    state.trackers[i] = S.logUrge(state.trackers[i], now());
     save();
     closeSheet();
     if (detailId) renderDetail();
@@ -376,6 +479,34 @@ function renderSettings() {
       <div class="setting"><div><b>PIN lock</b><p>Ask for a PIN when the app opens or after a minute away.</p></div>
         <button class="switch" role="switch" id="s-pin" aria-checked="${locked}" aria-label="PIN lock"></button></div>
     </div></div>
+    <div class="section"><h3>Accountability partner</h3><div class="panel">
+      <p class="hint" style="margin:0 0 4px">Someone you trust: a friend, mentor or pastor. Adds “Text” and “Call” buttons to the struggling screen, and lets you tell them when you earn a medal. Saved only on this phone.</p>
+      <div class="row">
+        <label class="field"><span>Name</span><input type="text" id="s-pname" maxlength="40" value="${esc(state.settings.partner?.name ?? "")}" placeholder="e.g. Mike"></label>
+        <label class="field"><span>Phone</span><input type="tel" id="s-pphone" maxlength="20" value="${esc(state.settings.partner?.phone ?? "")}" placeholder="+1 555 010 9999"></label>
+      </div>
+      <button class="btn" id="s-psave" style="margin-top:12px">Save partner</button>
+      <div class="setting"><div><b>Keep it private when sharing</b><p>Shares say “14 days on my streak” instead of naming what you're quitting.</p></div>
+        <button class="switch" role="switch" id="s-hide" aria-checked="${!!state.settings.hideName}" aria-label="Keep it private when sharing"></button></div>
+    </div></div>
+
+    <div class="section"><h3>Daily check-in & reminders</h3><div class="panel">
+      <div class="setting"><div><b>Daily check-in</b><p>Commit to the day each morning, rate it each evening.</p></div>
+        <button class="switch" role="switch" id="s-checkin" aria-checked="${state.settings.checkin !== false}" aria-label="Daily check-in"></button></div>
+      <p class="hint">Reminders work through your phone's calendar: Streaks makes calendar events, and your calendar sends the alerts. Titles are discreet.</p>
+      <div class="row">
+        <label class="field"><span>Morning</span><input type="time" id="s-morning" value="${esc(state.settings.morning)}"></label>
+        <label class="field"><span>Evening</span><input type="time" id="s-evening" value="${esc(state.settings.evening)}"></label>
+      </div>
+      <button class="btn" id="s-ics-checkin" style="margin-top:12px">Add daily reminders to my calendar</button>
+      <button class="btn" id="s-ics-medals" style="margin-top:10px">Add upcoming medal days to my calendar</button>
+    </div></div>
+
+    <div class="section"><h3>Block it at the source</h3><div class="panel">
+      <p class="hint" style="margin:0 0 12px">Your phone can block adult sites and limit social apps by itself. Streaks can't block anything, but these built-in settings can, and they make a big difference.</p>
+      <button class="btn" id="s-guide">Show me how</button>
+    </div></div>
+
     <div class="section"><h3>Your data</h3><div class="panel">
       <p class="hint" style="margin:0 0 12px">Everything stays on this device. Nothing is uploaded anywhere. Save a backup now and then so you don't lose your streaks if you clear your browser or switch phones.</p>
       <div class="row"><button class="btn" id="s-export">Save backup</button><button class="btn" id="s-import">Restore backup</button></div>
@@ -412,6 +543,35 @@ function renderSettings() {
     }
   });
   $("#s-howto").addEventListener("click", () => showWelcome());
+  $("#s-psave").addEventListener("click", () => {
+    const name = $("#s-pname").value.trim().slice(0, 40), phone = $("#s-pphone").value.replace(/[^\d+]/g, "").slice(0, 20);
+    state.settings.partner = name || phone ? { name, phone } : null;
+    save();
+    toast(state.settings.partner ? `Saved. ${name || "Your partner"} is a tap away when it's hard.` : "Partner removed");
+  });
+  $("#s-hide").addEventListener("click", (e) => {
+    state.settings.hideName = !state.settings.hideName;
+    e.currentTarget.setAttribute("aria-checked", String(state.settings.hideName));
+    save();
+  });
+  $("#s-checkin").addEventListener("click", (e) => {
+    state.settings.checkin = state.settings.checkin === false;
+    e.currentTarget.setAttribute("aria-checked", String(state.settings.checkin));
+    save(); renderList();
+  });
+  ["morning", "evening"].forEach((k) => $(`#s-${k}`).addEventListener("change", (e) => {
+    if (/^\d{2}:\d{2}$/.test(e.target.value)) { state.settings[k] = e.target.value; save(); }
+  }));
+  $("#s-ics-checkin").addEventListener("click", () => {
+    downloadFile("streaks-reminders.ics", S.icsCheckins({ morning: state.settings.morning, evening: state.settings.evening }, now()), "text/calendar");
+    toast("Open the file to add the reminders to your calendar.");
+  });
+  $("#s-ics-medals").addEventListener("click", () => {
+    if (!state.trackers.length) return toast("Start a streak first");
+    downloadFile("streaks-medal-days.ics", S.icsMilestones(state.trackers, now(), true), "text/calendar");
+    toast("Open the file to add your medal days to your calendar.");
+  });
+  $("#s-guide").addEventListener("click", openGuide);
   $("#s-export").addEventListener("click", exportBackup);
   $("#s-import").addEventListener("click", () => $("#s-file").click());
   $("#s-file").addEventListener("change", importBackup);
@@ -422,7 +582,7 @@ function renderSettings() {
   });
 }
 function wipe() {
-  state = { trackers: [], settings: { scripture: true } };
+  state = fresh();
   save(); closeAllSheets(); renderList(); toast("Erased");
 }
 
@@ -446,7 +606,8 @@ async function importBackup(e) {
   try {
     const data = S.parseBackup(await f.text());
     if (!confirm(`Replace what's on this device with the backup (${plural(data.trackers.length, "streak")})?`)) return;
-    state = { trackers: data.trackers, settings: { ...state.settings, scripture: data.settings.scripture } };
+    state = { trackers: data.trackers, checkins: data.checkins,
+              settings: { ...state.settings, ...data.settings } }; // keeps this device's PIN
     save(); closeAllSheets(); renderList(); toast("Backup restored");
   } catch (err) {
     toast(`Couldn't restore: ${err.message}`);
@@ -537,11 +698,14 @@ function celebrate({ t, m }) {
     ${reward ? `<div class="reward">🎁 You promised yourself: <b>${esc(reward)}</b>. Go get it.</div>` : ""}
     ${verseHtml()}
     ${n ? `<p class="hint">Next medal: ${esc(n.name)}</p>` : ""}
-    <button class="btn primary" id="celebrate-ok">Keep going</button>`;
+    <div class="row" style="margin-top:18px"><button class="btn" id="celebrate-share">Share</button>
+      ${state.settings.partner?.phone ? `<a class="btn" href="${smsHref(`Just hit ${m.name}! ${S.shareText(t, now(), state.settings.hideName)}`)}">Tell ${esc(state.settings.partner.name || "partner")}</a>` : ""}</div>
+    <button class="btn primary" id="celebrate-ok" style="margin-top:10px">Keep going</button>`;
   $("#celebrate").hidden = false;
   navigator.vibrate?.([60, 40, 120]);
   confetti();
   $("#celebrate-ok").focus();
+  $("#celebrate-share").addEventListener("click", () => shareProgress(t, m));
   $("#celebrate-ok").addEventListener("click", () => {
     $("#celebrate").hidden = true;
     celebrating = false;
@@ -568,6 +732,119 @@ function confetti() {
     if (ts < end) requestAnimationFrame(frame); else ctx.clearRect(0, 0, W, H);
   };
   requestAnimationFrame(frame);
+}
+
+// ---------- partner ----------
+const smsHref = (body) => `sms:${state.settings.partner?.phone ?? ""}?&body=${encodeURIComponent(body)}`;
+function partnerButtons(message) {
+  const pt = state.settings.partner;
+  if (!pt?.phone) {
+    return `<p class="hint" style="text-align:center">Tip: add an accountability partner in Settings to text or call them from here.</p>`;
+  }
+  const who = esc(pt.name || "partner");
+  return `<div class="row partner-row"><a class="btn" href="${smsHref(message)}">💬 Text ${who}</a>
+    <a class="btn" href="tel:${esc(pt.phone)}">📞 Call ${who}</a></div>`;
+}
+
+// ---------- sharing ----------
+function downloadFile(name, text, type) {
+  const url = URL.createObjectURL(new Blob([text], { type }));
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function medalImage(m) {
+  const [a, b] = TIER[m.tier];
+  const inner = medal(m).replace(/^\s*<svg[^>]*>/, "").replace(/<\/svg>\s*$/, "");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="420" height="420" viewBox="0 0 64 64"><defs>
+    <radialGradient id="tier-${m.tier}" cx="35%" cy="30%" r="80%"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></radialGradient></defs>${inner}</svg>`;
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
+  });
+}
+
+async function shareCard(t, m) {
+  const W = 1080, H = 1350, c = document.createElement("canvas");
+  c.width = W; c.height = H;
+  const x = c.getContext("2d");
+  x.fillStyle = "#000"; x.fillRect(0, 0, W, H);
+  const glow = x.createRadialGradient(W / 2, 520, 40, W / 2, 520, 620);
+  glow.addColorStop(0, "rgba(139,108,255,.35)"); glow.addColorStop(1, "rgba(0,0,0,0)");
+  x.fillStyle = glow; x.fillRect(0, 0, W, H);
+  const days = S.parts(S.streakMs(t, now())).days;
+  const shown = m || S.reached(S.streakMs(t, now())).at(-1);
+  if (shown) x.drawImage(await medalImage(shown), W / 2 - 210, 150, 420, 420);
+  x.textAlign = "center"; x.fillStyle = "#fff";
+  x.font = "800 200px -apple-system, Segoe UI, Roboto, sans-serif";
+  x.fillText(String(days), W / 2, 800);
+  x.font = "600 54px -apple-system, Segoe UI, Roboto, sans-serif"; x.fillStyle = "#b9b9c4";
+  x.fillText(`${days === 1 ? "day" : "days"} ${state.settings.hideName ? "on my streak" : "free from " + t.name.toLowerCase()}`, W / 2, 880);
+  if (m) { x.font = "700 60px -apple-system, Segoe UI, Roboto, sans-serif"; x.fillStyle = "#f4c14f"; x.fillText(`${m.name} medal earned`, W / 2, 1000); }
+  x.font = "600 40px -apple-system, Segoe UI, Roboto, sans-serif"; x.fillStyle = "#6f6f7a";
+  x.fillText("Streaks", W / 2, H - 90);
+  return new Promise((r) => c.toBlob(r, "image/png"));
+}
+
+async function shareProgress(t, m = null) {
+  const text = (m ? `Just earned ${m.name}! ` : "") + S.shareText(t, now(), state.settings.hideName);
+  let file = null;
+  try { file = new File([await shareCard(t, m)], "streak.png", { type: "image/png" }); } catch { /* text only */ }
+  try {
+    if (file && navigator.canShare?.({ files: [file] })) return await navigator.share({ files: [file], text });
+    if (navigator.share) return await navigator.share({ text });
+  } catch (e) {
+    if (e?.name === "AbortError") return; // closed the share sheet
+  }
+  if (file) {
+    const url = URL.createObjectURL(file);
+    const a = Object.assign(document.createElement("a"), { href: url, download: "streak.png" });
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1500);
+  }
+  try { await navigator.clipboard?.writeText(text); } catch { /* ignore */ }
+  toast("Image saved and message copied. Paste it wherever you like.");
+}
+
+// ---------- blocker guide ----------
+function openGuide() {
+  const el = $("#guide");
+  el.innerHTML = `<div class="sheet-inner">
+    <div class="sheet-top"><button class="icon-btn back" data-close aria-label="Back">‹</button><h2>Block it at the source</h2><span class="icon-btn"></span></div>
+    <p class="explain" style="margin-top:6px">Menu names can differ a little by phone and software version. Strongest move: let your accountability partner set the passcode, so you can't turn it off on a weak night.</p>
+    <div class="section"><h3>iPhone: block adult websites</h3><div class="panel"><ol class="steps">
+      <li>Open <b>Settings → Screen Time</b> and turn it on if it's off.</li>
+      <li>Tap <b>Content & Privacy Restrictions</b> and switch it on.</li>
+      <li>Tap <b>App Store, Media, Web & Games</b> (on older iPhones: <b>Content Restrictions</b>) → <b>Web Content</b>.</li>
+      <li>Choose <b>Limit Adult Websites</b>.</li>
+      <li>Back in Screen Time, tap <b>Lock Screen Time Settings</b> and have your partner choose the passcode.</li>
+    </ol></div></div>
+    <div class="section"><h3>iPhone: limit social media</h3><div class="panel"><ol class="steps">
+      <li><b>Settings → Screen Time → App Limits → Add Limit</b>.</li>
+      <li>Pick <b>Social</b> (or specific apps), set a daily time, and turn on <b>Block at End of Limit</b>.</li>
+      <li>Optional: <b>Downtime</b> blocks apps overnight, when urges are often strongest.</li>
+    </ol></div></div>
+    <div class="section"><h3>Android: block adult websites</h3><div class="panel"><ol class="steps">
+      <li>Open <b>Settings → Network & internet → Private DNS</b> (on Samsung: <b>Connections → More connection settings → Private DNS</b>).</li>
+      <li>Choose <b>Private DNS provider hostname</b> and enter <b>family.cloudflare-dns.com</b>, Cloudflare's free family filter that blocks adult content and malware.</li>
+      <li>Save. It works in every browser and app on the phone.</li>
+    </ol></div></div>
+    <div class="section"><h3>Android: limit social media</h3><div class="panel"><ol class="steps">
+      <li><b>Settings → Digital Wellbeing & parental controls → Dashboard</b>.</li>
+      <li>Tap an app (Instagram, TikTok…) → <b>App timer</b>, and set a daily limit.</li>
+      <li>Optional: <b>Bedtime mode</b> or <b>Focus mode</b> pauses distracting apps on a schedule.</li>
+    </ol></div></div>
+    <div class="section"><h3>Everywhere</h3><div class="panel"><ul class="steps">
+      <li>Turn on <b>SafeSearch</b> in Google search settings.</li>
+      <li>Keep your phone out of the bedroom at night. Charge it in another room.</li>
+      <li>Delete the apps you're quitting instead of just ignoring them.</li>
+    </ul></div></div>
+  </div>`;
+  el.querySelector("[data-close]").addEventListener("click", closeSheet);
+  openSheet(el);
 }
 
 // ---------- welcome walkthrough ----------
@@ -672,8 +949,14 @@ function tick() {
     const n = S.next(S.streakMs(t, t0));
     bar.setAttribute("stroke-dashoffset", String(+bar.dataset.c * (1 - (n ? n.progress : 1))));
   });
+  // Redraw the home screen when the check-in moves to evening or a new day starts
+  // (also changes the verse of the day), so it's right even if the app stayed open.
+  const phase = `${S.dayKey(t0)}:${new Date(t0).getHours() >= 17 ? "evening" : "morning"}`;
+  if (lastPhase && phase !== lastPhase && !document.activeElement?.closest?.(".checkin")) renderList();
+  lastPhase = phase;
   checkMilestones();
 }
+let lastPhase = null;
 
 // ---------- start ----------
 renderList();
