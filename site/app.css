@@ -268,3 +268,5 @@ a.btn { text-decoration: none; color: var(--text); }
 input[type=number], input[type=tel], input[type=time] {
   width: 100%; padding: 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--card); color: var(--text); font: inherit; font-size: 16px; }
 .celebrate-card .row .btn { margin-top: 0; }
+
+.ask { z-index: 80; }

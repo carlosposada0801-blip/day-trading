@@ -314,3 +314,11 @@ export function shareText(t, now, hideName) {
   const n = next(streakMs(t, now));
   return `${p.days} ${p.days === 1 ? "day" : "days"} ${what}.${n ? ` Next up: ${n.milestone.name}.` : ""}`;
 }
+
+/** A Google Calendar "add event" link. Times are local (Google uses the calendar's time zone). */
+export function gcalUrl({ title, details = "", start, minutes = 5, rrule = "" }) {
+  const end = new Date(start.getTime() + minutes * 60_000);
+  const params = new URLSearchParams({ action: "TEMPLATE", text: title, details, dates: `${icsLocal(start)}/${icsLocal(end)}` });
+  if (rrule) params.set("recur", rrule);
+  return `https://calendar.google.com/calendar/render?${params}`;
+}

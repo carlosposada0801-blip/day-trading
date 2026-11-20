@@ -70,6 +70,16 @@ It opens full-screen like an app and works offline.
 On iPhone, add it to your home screen **first** and set up your streaks from there. The
 home-screen version keeps its own storage, separate from Safari's.
 
+## Or use it on your Claude account (no GitHub setup)
+
+`site/claude.html` (built with `npm run build:claude`) runs the same app as a private page on
+your Claude account. Only you can open it, and your streaks are saved privately to your
+account, so they're the same on your phone and your computer. Differences from the website
+version:
+- Calendar reminders use Google Calendar links.
+- Backups and share images go through Claude's save prompt.
+- It opens inside Claude rather than as a home-screen app.
+
 ## Publish it (free, GitHub Pages)
 
 1. In this repo on GitHub: **Settings → Pages → Build and deployment → Source: GitHub

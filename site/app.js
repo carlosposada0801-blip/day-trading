@@ -1,6 +1,10 @@
 import * as S from "./streak.js";
 
-// ---------- storage (this device only) ----------
+// Two ways to run: as a website ("web", data in this browser) or as a private page on the
+// owner's Claude account ("claude", data saved to their account so every device sees it).
+const HOST = globalThis.STREAKS_HOST === "claude" ? "claude" : "web";
+
+// ---------- storage ----------
 const KEY = "streaks.v1";
 const DEFAULT_SETTINGS = { scripture: true, checkin: true, hideName: true, partner: null, morning: "08:00", evening: "21:00" };
 const fresh = () => ({ trackers: [], checkins: {}, settings: { ...DEFAULT_SETTINGS } });
@@ -16,8 +20,62 @@ const load = () => {
 };
 let state = load();
 function save() {
+  state.updatedAt = Date.now();
   try { localStorage.setItem(KEY, JSON.stringify(state)); }
-  catch { toast("Couldn't save on this device. Export a backup from Settings."); }
+  catch { if (!cloud) toast("Couldn't save on this device. Export a backup from Settings."); }
+  cloudSave();
+}
+
+// Claude host: one private document per person, data/users/<id>/state (private even from
+// the page's owner by default; here the owner is the only person using it anyway).
+let cloud = null, cloudTimer = null, cloudWriting = false, cloudDirty = false;
+function cloudSave() {
+  if (!cloud) return;
+  cloudDirty = true;
+  clearTimeout(cloudTimer);
+  cloudTimer = setTimeout(flushCloud, 700); // one write per pause, never overlapping
+}
+async function flushCloud() {
+  if (!cloud || cloudWriting || !cloudDirty) return;
+  cloudWriting = true; cloudDirty = false;
+  try {
+    await cloud.ref.set({ state: JSON.parse(JSON.stringify(state)), updatedAt: state.updatedAt || Date.now() });
+  } catch (e) {
+    if (e?.code === "quota_exceeded" || e?.code === "invalid_argument") toast("Couldn't save to your Claude account. Save a backup from Settings.");
+    else if (e?.code !== "revoked") cloudDirty = true; // transient: try again shortly
+  } finally {
+    cloudWriting = false;
+    if (cloudDirty) cloudTimer = setTimeout(flushCloud, 2000);
+  }
+}
+function adopt(st) {
+  state = { trackers: st.trackers ?? [], checkins: st.checkins ?? {},
+            settings: { ...DEFAULT_SETTINGS, ...st.settings }, updatedAt: st.updatedAt || 0 };
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* cloud is the source */ }
+}
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
+async function initCloud() {
+  if (HOST !== "claude" || typeof globalThis.claude?.use !== "function") return false;
+  const [db, user] = await Promise.all([claude.use("db"), claude.use("user")]);
+  if (!db || !user) return false;
+  const id = await user.id();
+  if (!id) return false;
+  const ref = db.doc(`data/users/${id}/state`);
+  const snap = await withTimeout(ref.get(), 10000);
+  cloud = { ref };
+  const remote = snap.exists ? snap.data() : null;
+  if (remote?.state && (remote.updatedAt || 0) >= (state.updatedAt || 0)) adopt({ ...remote.state, updatedAt: remote.updatedAt });
+  else if (state.trackers.length || Object.keys(state.checkins || {}).length) cloudSave(); // first visit: keep what's here
+  // Changes made on another device show up here too.
+  ref.onSnapshot((s) => {
+    if (!s.exists || s.metadata.hasPendingWrites) return;
+    const d = s.data();
+    if ((d.updatedAt || 0) > (state.updatedAt || 0) && d.state) {
+      adopt({ ...d.state, updatedAt: d.updatedAt });
+      if (!stack.length) renderList(); else if (detailId) renderDetail();
+    }
+  }, () => {});
+  return true;
 }
 navigator.storage?.persist?.().catch(() => {}); // ask the browser not to clear our data
 
@@ -37,6 +95,19 @@ function toast(msg) {
   t.classList.add("show");
   clearTimeout(t._h);
   t._h = setTimeout(() => t.classList.remove("show"), Math.max(2800, msg.length * 60));
+}
+
+function ask(message, { ok = "OK", danger = false } = {}) {
+  return new Promise((resolve) => {
+    const el = $("#ask");
+    el.innerHTML = `<div class="celebrate-card info-card"><p class="about">${esc(message)}</p>
+      <div class="row" style="margin-top:16px"><button class="btn" data-a="0">Cancel</button>
+      <button class="btn ${danger ? "danger" : "primary"}" data-a="1">${esc(ok)}</button></div></div>`;
+    el.hidden = false;
+    const done = (v) => { el.hidden = true; el.innerHTML = ""; resolve(v); };
+    el.querySelectorAll("[data-a]").forEach((b) => b.addEventListener("click", () => done(b.dataset.a === "1")));
+    el.querySelector('[data-a="1"]').focus();
+  });
 }
 
 // Scripture encouragement (KJV, public domain). Shown when the setting is on.
@@ -402,8 +473,8 @@ function openEditor(id, preset = {}) {
     const days = S.parts(now() - start).days;
     toast(t ? "Saved" : days ? `Saved: ${plural(days, "day")} and counting.` : "Streak started. Day one.");
   });
-  $("#f-delete")?.addEventListener("click", () => {
-    if (!confirm(`Delete “${t.name}” and all its history? This can't be undone.`)) return;
+  $("#f-delete")?.addEventListener("click", async () => {
+    if (!(await ask(`Delete “${t.name}” and all its history? This can't be undone.`, { ok: "Delete", danger: true }))) return;
     state.trackers = state.trackers.filter((x) => x.id !== t.id);
     save();
     detailId = null;
@@ -480,7 +551,7 @@ function renderSettings() {
         <button class="switch" role="switch" id="s-pin" aria-checked="${locked}" aria-label="PIN lock"></button></div>
     </div></div>
     <div class="section"><h3>Accountability partner</h3><div class="panel">
-      <p class="hint" style="margin:0 0 4px">Someone you trust: a friend, mentor or pastor. Adds “Text” and “Call” buttons to the struggling screen, and lets you tell them when you earn a medal. Saved only on this phone.</p>
+      <p class="hint" style="margin:0 0 4px">Someone you trust: a friend, mentor or pastor. Adds “Text” and “Call” buttons to the struggling screen, and lets you tell them when you earn a medal. ${HOST === "claude" ? "Saved privately to your Claude account." : "Saved only on this phone."}</p>
       <div class="row">
         <label class="field"><span>Name</span><input type="text" id="s-pname" maxlength="40" value="${esc(state.settings.partner?.name ?? "")}" placeholder="e.g. Mike"></label>
         <label class="field"><span>Phone</span><input type="tel" id="s-pphone" maxlength="20" value="${esc(state.settings.partner?.phone ?? "")}" placeholder="+1 555 010 9999"></label>
@@ -498,8 +569,8 @@ function renderSettings() {
         <label class="field"><span>Morning</span><input type="time" id="s-morning" value="${esc(state.settings.morning)}"></label>
         <label class="field"><span>Evening</span><input type="time" id="s-evening" value="${esc(state.settings.evening)}"></label>
       </div>
-      <button class="btn" id="s-ics-checkin" style="margin-top:12px">Add daily reminders to my calendar</button>
-      <button class="btn" id="s-ics-medals" style="margin-top:10px">Add upcoming medal days to my calendar</button>
+      ${HOST === "claude" ? gcalButtons() : `<button class="btn" id="s-ics-checkin" style="margin-top:12px">Add daily reminders to my calendar</button>
+      <button class="btn" id="s-ics-medals" style="margin-top:10px">Add upcoming medal days to my calendar</button>`}
     </div></div>
 
     <div class="section"><h3>Block it at the source</h3><div class="panel">
@@ -508,7 +579,9 @@ function renderSettings() {
     </div></div>
 
     <div class="section"><h3>Your data</h3><div class="panel">
-      <p class="hint" style="margin:0 0 12px">Everything stays on this device. Nothing is uploaded anywhere. Save a backup now and then so you don't lose your streaks if you clear your browser or switch phones.</p>
+      <p class="hint" style="margin:0 0 12px">${HOST === "claude"
+        ? (cloud ? "Saved privately to your Claude account: only you can see it, on any device where you're signed in. A backup file is a good extra copy." : "Not connected to your Claude account right now, so changes are only kept in this browser. Save a backup to be safe.")
+        : "Everything stays on this device. Nothing is uploaded anywhere. Save a backup now and then so you don't lose your streaks if you clear your browser or switch phones."}</p>
       <div class="row"><button class="btn" id="s-export">Save backup</button><button class="btn" id="s-import">Restore backup</button></div>
       <input type="file" id="s-file" accept="application/json,.json" hidden>
       <button class="btn ghost danger" id="s-wipe" style="margin-top:10px">Erase everything</button>
@@ -520,13 +593,15 @@ function renderSettings() {
         <details><summary>What happens if I slip?</summary><p>Open the streak and tap “I slipped: reset to zero”. The clock starts over, but your best streak, every medal you've earned and your history all stay. You can add a private note about what happened to spot patterns later.</p></details>
         <details><summary>How do medals and rewards work?</summary><p>Medals unlock at 1, 3 and 7 days, 2 weeks, 1, 2, 3 and 6 months, then 1, 2, 3, 5 and 10 years. When you reach one, you get a celebration. Set your own reward for any medal (✎ Edit on a streak) and it shows on the medal and in the celebration.</p></details>
         <details><summary>What does “I'm struggling” do?</summary><p>It guides you through 90 seconds of slow breathing and shows your reason for quitting. If you get through the urge, tap “I made it through” and it's counted under Urges beaten.</p></details>
-        <details><summary>Will it remind me or notify me?</summary><p>Not while it's closed. It's a website saved to your home screen, so it can't send notifications. Celebrations show up the next time you open it.</p></details>
-        <details><summary>Where is my data? Is it private?</summary><p>Only on this phone, in this browser. Nothing is uploaded and there's no account. Turn on the PIN lock to keep others out. Clearing your browser data or deleting the app from your home screen erases it, so save a backup now and then.</p></details>
+        <details><summary>Will it remind me or notify me?</summary><p>Not by itself: it can't send notifications while it's closed. Use the calendar reminders above. Celebrations show up the next time you open it.</p></details>
+        <details><summary>Where is my data? Is it private?</summary><p>${HOST === "claude"
+          ? "In a private spot on your Claude account. Only you can see it, and it's the same on every device where you're signed in to Claude. Turn on the PIN lock to keep out anyone who picks up your phone."
+          : "Only on this phone, in this browser. Nothing is uploaded and there's no account. Turn on the PIN lock to keep others out. Clearing your browser data or deleting the app from your home screen erases it, so save a backup now and then."}</p></details>
         <details><summary>How do I move to a new phone?</summary><p>Tap Save backup here, send the file to yourself, then open Streaks on the new phone and tap Restore backup.</p></details>
         <details><summary>Can I fix the start date?</summary><p>Yes. Open the streak, tap ✎ and change “Streak started”. It only changes the current streak.</p></details>
       </div>
     </div></div>
-    <p class="hint" style="text-align:center;margin-top:24px">Tip: add this page to your home screen to use it like an app, offline too.</p>
+    <p class="hint" style="text-align:center;margin-top:24px">${HOST === "claude" ? "Tip: bookmark this page or pin it in Claude so it's one tap away." : "Tip: add this page to your home screen to use it like an app, offline too."}</p>
   </div>`;
   el.querySelector("[data-close]").addEventListener("click", closeSheet);
   $("#s-scripture").addEventListener("click", (e) => {
@@ -560,13 +635,13 @@ function renderSettings() {
     save(); renderList();
   });
   ["morning", "evening"].forEach((k) => $(`#s-${k}`).addEventListener("change", (e) => {
-    if (/^\d{2}:\d{2}$/.test(e.target.value)) { state.settings[k] = e.target.value; save(); }
+    if (/^\d{2}:\d{2}$/.test(e.target.value)) { state.settings[k] = e.target.value; save(); if (HOST === "claude") renderSettings(); }
   }));
-  $("#s-ics-checkin").addEventListener("click", () => {
+  $("#s-ics-checkin")?.addEventListener("click", () => {
     downloadFile("streaks-reminders.ics", S.icsCheckins({ morning: state.settings.morning, evening: state.settings.evening }, now()), "text/calendar");
     toast("Open the file to add the reminders to your calendar.");
   });
-  $("#s-ics-medals").addEventListener("click", () => {
+  $("#s-ics-medals")?.addEventListener("click", () => {
     if (!state.trackers.length) return toast("Start a streak first");
     downloadFile("streaks-medal-days.ics", S.icsMilestones(state.trackers, now(), true), "text/calendar");
     toast("Open the file to add your medal days to your calendar.");
@@ -575,9 +650,9 @@ function renderSettings() {
   $("#s-export").addEventListener("click", exportBackup);
   $("#s-import").addEventListener("click", () => $("#s-file").click());
   $("#s-file").addEventListener("change", importBackup);
-  $("#s-wipe").addEventListener("click", () => {
-    if (!confirm("Erase every streak, medal and setting on this device?")) return;
-    if (!confirm("Really erase everything? This can't be undone.")) return;
+  $("#s-wipe").addEventListener("click", async () => {
+    if (!(await ask("Erase every streak, medal and setting?", { ok: "Erase", danger: true }))) return;
+    if (!(await ask("Really erase everything? This can't be undone.", { ok: "Erase everything", danger: true }))) return;
     wipe();
   });
 }
@@ -586,9 +661,26 @@ function wipe() {
   save(); closeAllSheets(); renderList(); toast("Erased");
 }
 
+// Website: share sheet or a normal download. Claude page: the platform's save prompt.
+async function saveFile(name, data, type) {
+  if (HOST === "claude") {
+    const dl = await claude.use("downloads");
+    if (!dl) { toast("Saving files isn't available here."); return false; }
+    try { await dl.save({ filename: name, data }); return true; }
+    catch (e) { if (e?.code !== "declined") toast("Couldn't save the file."); return false; }
+  }
+  const blob = data instanceof Blob ? data : new Blob([data], { type });
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: name });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+  return true;
+}
+
 async function exportBackup() {
   const text = S.makeBackup(state);
   const name = `streaks-backup-${new Date().toISOString().slice(0, 10)}.json`;
+  if (HOST === "claude") { if (await saveFile(name, text, "application/json")) toast("Backup saved"); return; }
   const file = new File([text], name, { type: "application/json" });
   if (navigator.canShare?.({ files: [file] })) {
     try { await navigator.share({ files: [file], title: "Streaks backup" }); return; } catch { /* fall through to download */ }
@@ -605,7 +697,7 @@ async function importBackup(e) {
   if (!f) return;
   try {
     const data = S.parseBackup(await f.text());
-    if (!confirm(`Replace what's on this device with the backup (${plural(data.trackers.length, "streak")})?`)) return;
+    if (!(await ask(`Replace your current streaks with the backup (${plural(data.trackers.length, "streak")})?`, { ok: "Restore" }))) return;
     state = { trackers: data.trackers, checkins: data.checkins,
               settings: { ...state.settings, ...data.settings } }; // keeps this device's PIN
     save(); closeAllSheets(); renderList(); toast("Backup restored");
@@ -620,6 +712,7 @@ async function hashPin(pin, salt) {
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 let pinMode = null; // "unlock" | "set1" | "set2"
+let unlockedOnce = false;
 let pinBuf = "", pinFirst = "";
 function showLock(mode) {
   pinMode = mode; pinBuf = ""; pinFirst = mode === "set2" ? pinFirst : "";
@@ -642,7 +735,7 @@ async function pinKey(k) {
   if (k === "⌫") { pinBuf = pinBuf.slice(0, -1); return drawDots(); }
   if (k === "Cancel") { $("#lock").hidden = true; return; }
   if (k === "Forgot?") {
-    if (confirm("Without the PIN the only way in is to erase everything on this device. Erase and start over?")) {
+    if (await ask("Without the PIN the only way in is to erase everything. Erase and start over?", { ok: "Erase", danger: true })) {
       wipe(); $("#lock").hidden = true;
     }
     return;
@@ -651,7 +744,7 @@ async function pinKey(k) {
   pinBuf += k; drawDots();
   if (pinBuf.length < 4) return;
   if (pinMode === "unlock") {
-    if (await hashPin(pinBuf, state.settings.pinSalt) === state.settings.pinHash) { $("#lock").hidden = true; lastHidden = null; }
+    if (await hashPin(pinBuf, state.settings.pinSalt) === state.settings.pinHash) { $("#lock").hidden = true; lastHidden = null; unlockedOnce = true; }
     else pinFail("Wrong PIN");
   } else if (pinMode === "set1") {
     pinFirst = pinBuf; showLock("set2");
@@ -734,6 +827,20 @@ function confetti() {
   requestAnimationFrame(frame);
 }
 
+// ---------- Google Calendar links (Claude page: calendar files can't be saved there) ----------
+function gcalButtons() {
+  const t0 = now();
+  const link = (label, ev) => `<a class="btn" style="margin-top:10px" href="${esc(S.gcalUrl(ev))}" target="_blank" rel="noopener">${esc(label)}</a>`;
+  const at = (hhmm) => { const [h, m] = hhmm.split(":").map(Number); const d = new Date(t0); d.setHours(h, m, 0, 0); if (d.getTime() <= t0) d.setDate(d.getDate() + 1); return d; };
+  const medals = state.trackers.map((t) => ({ t, n: S.next(S.streakMs(t, t0)) })).filter((x) => x.n);
+  return `<div style="margin-top:6px">
+    ${link("Morning reminder (Google Calendar)", { title: "Streaks: morning check-in", details: "Open Streaks and commit to today.", start: at(state.settings.morning), rrule: "RRULE:FREQ=DAILY" })}
+    ${link("Evening reminder (Google Calendar)", { title: "Streaks: how did today go?", details: "Open Streaks and check in for tonight.", start: at(state.settings.evening), rrule: "RRULE:FREQ=DAILY" })}
+    ${medals.map(({ t, n }) => link(`Next medal day: ${n.milestone.name} (${new Date(t.startedAt + n.milestone.days * S.DAY).toLocaleDateString([], { month: "short", day: "numeric" })})`,
+      { title: `🏅 Streak medal: ${n.milestone.name}`, details: "Open Streaks to claim your medal.", start: new Date(t.startedAt + n.milestone.days * S.DAY), minutes: 15 })).join("")}
+    <p class="hint">No Google Calendar? Set a daily reminder in your phone's Reminders or Clock app instead.</p></div>`;
+}
+
 // ---------- partner ----------
 const smsHref = (body) => `sms:${state.settings.partner?.phone ?? ""}?&body=${encodeURIComponent(body)}`;
 function partnerButtons(message) {
@@ -743,16 +850,12 @@ function partnerButtons(message) {
   }
   const who = esc(pt.name || "partner");
   return `<div class="row partner-row"><a class="btn" href="${smsHref(message)}">💬 Text ${who}</a>
-    <a class="btn" href="tel:${esc(pt.phone)}">📞 Call ${who}</a></div>`;
+    <a class="btn" href="tel:${esc(pt.phone)}">📞 Call ${who}</a></div>
+    <p class="hint" style="text-align:center;margin-top:6px">${who}: <span class="num">${esc(pt.phone)}</span></p>`;
 }
 
 // ---------- sharing ----------
-function downloadFile(name, text, type) {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const a = Object.assign(document.createElement("a"), { href: url, download: name });
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1500);
-}
+const downloadFile = (name, text, type) => saveFile(name, text, type);
 
 function medalImage(m) {
   const [a, b] = TIER[m.tier];
@@ -793,6 +896,12 @@ async function shareProgress(t, m = null) {
   const text = (m ? `Just earned ${m.name}! ` : "") + S.shareText(t, now(), state.settings.hideName);
   let file = null;
   try { file = new File([await shareCard(t, m)], "streak.png", { type: "image/png" }); } catch { /* text only */ }
+  if (HOST === "claude") { // no share sheet inside Claude: save the image, copy the message
+    try { await navigator.clipboard?.writeText(text); } catch { /* ignore */ }
+    if (file && await saveFile("streak.png", file, "image/png")) toast("Image saved and message copied. Send them from your phone.");
+    else toast("Message copied. Paste it wherever you like.");
+    return;
+  }
   try {
     if (file && navigator.canShare?.({ files: [file] })) return await navigator.share({ files: [file], text });
     if (navigator.share) return await navigator.share({ text });
@@ -864,10 +973,10 @@ function showWelcome() {
              <li><b>If you slip:</b> reset and start again. Your best streak, medals and history all stay. A slip isn't the end.</li></ul>` },
     { art: `<svg viewBox="0 0 64 64" aria-hidden="true"><rect x="14" y="28" width="36" height="28" rx="6" fill="#8b6cff"/><path d="M22 28v-8a10 10 0 0 1 20 0v8" fill="none" stroke="#3fd0ff" stroke-width="5"/></svg>`,
       title: "Private to you",
-      body: `<ul><li>Everything stays <b>on this phone</b>. No account, nothing uploaded.</li>
+      body: `<ul><li>${HOST === "claude" ? "Saved <b>privately to your Claude account</b>. Only you can see it." : "Everything stays <b>on this phone</b>. No account, nothing uploaded."}</li>
              <li>Add a <b>PIN lock</b> in Settings to keep others out.</li>
              <li>Save a <b>backup</b> now and then so you never lose your streaks.</li>
-             <li>Add Streaks to your <b>home screen</b> to use it like an app.</li></ul>` },
+             <li>${HOST === "claude" ? "<b>Bookmark</b> this page or pin it in Claude to open it fast." : "Add Streaks to your <b>home screen</b> to use it like an app."}</li></ul>` },
   ];
   let i = 0;
   const el = $("#welcome");
@@ -893,7 +1002,7 @@ function showWelcome() {
 // ---------- sheets & back button ----------
 const stack = [];
 function openSheet(el) {
-  if (!stack.includes(el)) { stack.push(el); history.pushState({ sheet: el.id }, ""); }
+  if (!stack.includes(el)) { stack.push(el); if (HOST === "web") history.pushState({ sheet: el.id }, ""); }
   el.hidden = false;
   el.scrollTop = 0;
 }
@@ -905,11 +1014,12 @@ function hideTop() {
   if (el.id === "detail") detailId = null;
 }
 let ignorePops = 0;
-function closeSheet() { if (stack.length) history.back(); }
+function closeSheet() { if (!stack.length) return; if (HOST === "web") history.back(); else hideTop(); }
 function closeAllSheets() {
   const n = stack.length;
   if (!n) return;
   while (stack.length) hideTop();
+  if (HOST !== "web") return;
   ignorePops++; // one popstate arrives for the jump below; the sheets are already hidden
   history.go(-n);
 }
@@ -960,10 +1070,15 @@ let lastPhase = null;
 
 // ---------- start ----------
 renderList();
-if (!state.settings.onboarded && !state.trackers.length) showWelcome();
 if (state.settings.pinHash) showLock("unlock");
+// On the Claude page, wait for saved data before deciding whether this is a first visit.
+(HOST === "claude" ? initCloud().catch(() => false) : Promise.resolve(false)).then(() => {
+  if (HOST === "claude") renderList();
+  if (!state.settings.onboarded && !state.trackers.length) showWelcome();
+  if (state.settings.pinHash && $("#lock").hidden && !unlockedOnce) showLock("unlock");
+});
 tick();
 setInterval(tick, 1000);
-if ("serviceWorker" in navigator && location.protocol !== "file:") {
+if (HOST === "web" && "serviceWorker" in navigator && location.protocol !== "file:") {
   navigator.serviceWorker.register("sw.js").catch(() => {});
 }

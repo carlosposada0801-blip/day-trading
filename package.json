@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "test": "TZ=UTC node --test tests/*.test.js",
-    "start": "python3 -m http.server 8000 --directory site"
+    "start": "python3 -m http.server 8000 --directory site",
+    "build:claude": "node scripts/claude-page.mjs"
   }
 }
